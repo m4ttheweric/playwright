@@ -183,3 +183,39 @@ test('browser_run_code_unsafe with filename containing template literals', async
   const content = await consoleEntries(response);
   expect(content).toContain('[LOG] Done');
 });
+
+test('browser_run_code_unsafe args', async ({ client, server }) => {
+  server.setContent('/', `<title>Args</title>`, 'text/html');
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const response = parseResponse(await client.callTool({
+    name: 'browser_run_code_unsafe',
+    arguments: {
+      code: 'async (page, args) => `${args.greeting} ${args.count}`',
+      args: { greeting: 'hello', count: 42 },
+    },
+  }));
+  expect(response.result).toContain('hello 42');
+});
+
+test('browser_run_code_unsafe filename with args', async ({ client, server }) => {
+  server.setContent('/', `<title>Args</title>`, 'text/html');
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const filePath = test.info().outputPath('args-macro.js');
+  await fs.promises.writeFile(filePath, 'async (page, args) => `case ${args.caseId} at ${page.url()}`');
+  const response = parseResponse(await client.callTool({
+    name: 'browser_run_code_unsafe',
+    arguments: {
+      filename: 'args-macro.js',
+      args: { caseId: 'C-77' },
+    },
+  }));
+  expect(response.result).toContain('case C-77 at');
+});

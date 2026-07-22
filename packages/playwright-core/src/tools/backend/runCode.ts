@@ -25,6 +25,7 @@ import { defineTabTool } from './tool';
 const codeSchema = z.object({
   code: z.string().optional().describe(`A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: \`async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }\``),
   filename: z.string().optional().describe('Load code from the specified file. If both code and filename are provided, code will be ignored.'),
+  args: z.record(z.string(), z.unknown()).optional().describe('Optional JSON object passed to the function as its second argument, e.g. for parameterizing a script loaded via filename.'),
 });
 
 const runCode = defineTabTool({
@@ -43,10 +44,13 @@ const runCode = defineTabTool({
       const resolvedPath = await response.resolveClientFilename(params.filename);
       code = await fs.promises.readFile(resolvedPath, 'utf-8');
     }
-    response.addCode(`await (${code})(page);`);
+    response.addCode(params.args !== undefined
+      ? `await (${code})(page, ${JSON.stringify(params.args)});`
+      : `await (${code})(page);`);
     const __end__ = new ManualPromise<void>();
     const context: any = {
       page: tab.page,
+      __args__: params.args,
       __end__,
     };
     vm.createContext(context);
@@ -67,7 +71,7 @@ const runCode = defineTabTool({
         context.__fn__ = vm.runInContext('(' + code + ')', context);
         const snippet = '(async () => {\n' +
             '  try {\n' +
-            '    const result = await __fn__(page);\n' +
+            '    const result = await __fn__(page, __args__);\n' +
             '    __end__.resolve(JSON.stringify(result));\n' +
             '  } catch (e) {\n' +
             '    __end__.reject(e);\n' +
