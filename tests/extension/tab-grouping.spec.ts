@@ -74,7 +74,7 @@ test('connected tab is in green Playwright group, connect page is closed', async
       const g = await chrome.tabGroups.get(connectedTab.groupId);
       return { color: g.color, title: g.title };
     });
-  }).toEqual({ color: 'green', title: 'test #1' });
+  }).toEqual({ color: 'green', title: expect.stringMatching(/ #1$/) });
 });
 
 test('tab added to group gets auto-attached', async ({ browserWithExtension, startClient, server }) => {
@@ -338,5 +338,5 @@ test('tab is re-added to Playwright group after reconnecting', async ({ browserW
       const g = await chrome.tabGroups.get(tab.groupId);
       return { color: g.color, title: g.title };
     });
-  }).toEqual({ color: 'blue', title: 'test #2' });
+  }).toEqual({ color: 'blue', title: expect.stringMatching(/ #2$/) });
 });

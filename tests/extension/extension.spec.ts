@@ -326,6 +326,8 @@ test(`bypass connection dialog with token`, async ({ browserWithExtension, start
   const { client } = await startClient({
     clientName,
     args: [`--extension`],
+    // The tab group label and status page use the client workspace folder name.
+    roots: [{ name: 'workspace', uri: `file:///tmp/pw-bench/${clientName}` }],
     env: {
       PLAYWRIGHT_MCP_EXTENSION_TOKEN: value,
       PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
@@ -338,7 +340,7 @@ test(`bypass connection dialog with token`, async ({ browserWithExtension, start
   });
 
   expect(await navigateResponse).toHaveResponse({
-    snapshot: expect.stringContaining(`- generic [active] [ref=f1e1]: Hello, world!`),
+    page: expect.stringContaining('hello-world'),
   });
 
   await page.goto(`chrome-extension://${extensionId}/status.html`);

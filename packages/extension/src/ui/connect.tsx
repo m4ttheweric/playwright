@@ -27,12 +27,13 @@ type Status =
 
 const SUPPORTED_PROTOCOL_VERSION = 2;
 
-// Client name comes from the URL and never changes for the lifetime of this page.
-const clientInfo = (() => {
+// Client info comes from the URL and never changes for the lifetime of this page.
+const clientInfo: { name: string, cwd?: string } = (() => {
   try {
-    return JSON.parse(new URLSearchParams(window.location.search).get('client') || '{}').name || 'unknown';
+    const client = JSON.parse(new URLSearchParams(window.location.search).get('client') || '{}');
+    return { name: client.name || 'unknown', cwd: client.cwd };
   } catch {
-    return 'unknown';
+    return { name: 'unknown' };
   }
 })();
 
@@ -69,7 +70,7 @@ const ConnectApp: React.FC = () => {
 
       setStatus({
         type: 'connecting',
-        message: `"${clientInfo}" is trying to connect to the Playwright Extension.`
+        message: `"${clientInfo.name}" is trying to connect to the Playwright Extension.`
       });
 
       const parsedVersion = parseInt(params.get('protocolVersion') ?? '', 10);
@@ -135,21 +136,22 @@ const ConnectApp: React.FC = () => {
       const response = await chrome.runtime.sendMessage({
         type: 'connectToTab',
         tab,
-        clientName: clientInfo,
+        clientName: clientInfo.name,
+        clientCwd: clientInfo.cwd,
       });
 
       if (response?.success) {
-        setStatus({ type: 'connected', message: `"${clientInfo}" connected.` });
+        setStatus({ type: 'connected', message: `"${clientInfo.name}" connected.` });
       } else {
         setStatus({
           type: 'error',
-          message: response?.error || `"${clientInfo}" failed to connect.`
+          message: response?.error || `"${clientInfo.name}" failed to connect.`
         });
       }
     } catch (e) {
       setStatus({
         type: 'error',
-        message: `"${clientInfo}" failed to connect: ${e}`
+        message: `"${clientInfo.name}" failed to connect: ${e}`
       });
     }
   }, []);

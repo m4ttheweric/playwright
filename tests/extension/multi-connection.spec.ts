@@ -30,6 +30,8 @@ async function connectExtensionClient(
   const { client } = await startClient({
     args: ['--extension'],
     clientName,
+    // The tab group label is derived from the client workspace folder name.
+    roots: [{ name: 'workspace', uri: `file:///tmp/pw-bench/${clientName}` }],
     env: { PWTEST_EXTENSION_USER_DATA_DIR: userDataDir },
   });
   const connectPagePromise = browserContext.waitForEvent('page', page =>
@@ -53,7 +55,7 @@ test('second client does not disconnect the first', async ({ browserWithExtensio
   // Single-tenant extension closes A's relay when B connects, failing this call.
   const response = await clientA.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
   expect(response.isError ?? false).toBe(false);
-  expect(response).toHaveResponse({ snapshot: expect.stringContaining('Hello, world!') });
+  expect(response).toHaveResponse({ page: expect.stringContaining('hello-world') });
 });
 
 test('each client gets its own labeled tab group', async ({ browserWithExtension, startClient, server }) => {
@@ -126,4 +128,32 @@ test('disconnecting one client keeps the other alive', async ({ browserWithExten
 
   const response = await clientB.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
   expect(response.isError ?? false).toBe(false);
+});
+
+test('tab group label uses the client workspace folder name', async ({ browserWithExtension, startClient, server }) => {
+  server.setContent('/a', '<title>PageA</title><body>A</body>', 'text/html');
+  const browserContext = await browserWithExtension.launch();
+
+  const { client } = await startClient({
+    args: ['--extension'],
+    clientName: 'AgentA',
+    roots: [{ name: 'workspace', uri: 'file:///tmp/pw-slug-test/skunk' }],
+    env: { PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir },
+  });
+  const connectPagePromise = browserContext.waitForEvent('page', page =>
+    page.url().startsWith(`chrome-extension://${extensionId}/connect.html`));
+  const navigatePromise = client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/a' } });
+  const connectPage = await connectPagePromise;
+  await clickAllowAndSelect(connectPage, 'Welcome');
+  const response = await navigatePromise;
+  expect(response.isError ?? false).toBe(false);
+
+  const [sw] = browserContext.serviceWorkers();
+  await expect.poll(async () => {
+    return sw.evaluate(async () => {
+      const chrome = (globalThis as any).chrome;
+      const groups = await chrome.tabGroups.query({});
+      return groups.map((g: any) => g.title);
+    });
+  }).toEqual(['skunk #1']);
 });

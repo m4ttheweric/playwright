@@ -100,21 +100,23 @@ export class CDPRelayServer {
     return `${this._wsHost}${this._extensionPath}`;
   }
 
-  async establishExtensionConnection(clientName: string) {
+  async establishExtensionConnection(clientName: string, clientCwd?: string) {
     debugLogger('Establishing extension connection');
-    this._openConnectPageInBrowser(clientName);
+    this._openConnectPageInBrowser(clientName, clientCwd);
     debugLogger('Waiting for incoming extension connection');
     await this._extensionConnectionPromise;
     await this._handler.ready();
     debugLogger('Extension connection established');
   }
 
-  private _openConnectPageInBrowser(clientName: string) {
+  private _openConnectPageInBrowser(clientName: string, clientCwd?: string) {
     const mcpRelayEndpoint = `${this._wsHost}${this._extensionPath}`;
     const url = new URL(`chrome-extension://${playwrightExtensionId}/connect.html`);
     url.searchParams.set('mcpRelayUrl', mcpRelayEndpoint);
     const client = {
       name: clientName,
+      // Lets the extension label the connection's tab group by workspace.
+      cwd: clientCwd,
       // Not used anymore.
       version: undefined,
     };

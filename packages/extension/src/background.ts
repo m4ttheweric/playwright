@@ -31,6 +31,7 @@ type PageMessage = {
   // selection happens.
   tab?: chrome.tabs.Tab;
   clientName?: string;
+  clientCwd?: string;
 } | {
   type: 'getConnectionStatus';
 } | {
@@ -84,7 +85,7 @@ class PlaywrightExtension {
         // message sender, where `id` is always defined.
         const selectedTab = (message.tab ?? sender.tab!) as chrome.tabs.Tab & { id: number };
         const userSelected = message.tab !== undefined;
-        this._connectTab(sender.tab!.id!, selectedTab, message.clientName, userSelected).then(
+        this._connectTab(sender.tab!.id!, selectedTab, message.clientName, message.clientCwd, userSelected).then(
             () => sendResponse({ success: true }),
             (error: any) => sendResponse({ success: false, error: error.message }));
         return true; // Return true to indicate that the response will be sent asynchronously
@@ -114,7 +115,7 @@ class PlaywrightExtension {
     }
   }
 
-  private async _connectTab(selectorTabId: number, tab: chrome.tabs.Tab & { id: number }, clientName: string | undefined, userSelected: boolean): Promise<void> {
+  private async _connectTab(selectorTabId: number, tab: chrome.tabs.Tab & { id: number }, clientName: string | undefined, clientCwd: string | undefined, userSelected: boolean): Promise<void> {
     try {
       await this._cleanupPromise;
 
@@ -123,7 +124,13 @@ class PlaywrightExtension {
         throw new Error('Pending client connection closed');
 
       const id = ++this._lastConnectionId;
-      const label = `${clientName || 'Playwright'} #${id}`;
+      // The workspace folder name distinguishes concurrent clients far better
+      // than the client name, which is identical for every session of the
+      // same tool. Capped so a long folder name stays a readable group chip.
+      let workspace = clientCwd?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+      if (workspace && workspace.length > 24)
+        workspace = workspace.slice(0, 23) + '…';
+      const label = `${workspace || clientName || 'Playwright'} #${id}`;
       const style: GroupStyle = { title: label, color: GROUP_COLORS[(id - 1) % GROUP_COLORS.length] };
       const group = new ConnectedTabGroup(connection, tab, style);
       group.onclose = () => this._connections.delete(id);
