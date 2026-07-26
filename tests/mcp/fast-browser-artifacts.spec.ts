@@ -117,3 +117,12 @@ test('stages artifacts beside the output directory', () => {
   });
   expect(fs.existsSync(path.join(outDir, 'fast-browser-release-0.1.0-test.4.json'))).toBe(true);
 });
+
+test('release workflows call the checked-in artifact builder', () => {
+  const testWorkflow = fs.readFileSync('.github/workflows/tests_fast_browser.yml', 'utf8');
+  const publishWorkflow = fs.readFileSync('.github/workflows/publish_fast_browser.yml', 'utf8');
+  expect(testWorkflow).toContain('npm run test-mcp -- fast-browser-');
+  expect(testWorkflow).toContain('npm run test-extension -- extension.spec.ts multi-connection.spec.ts tab-grouping.spec.ts');
+  expect(publishWorkflow).toContain('node utils/fast_browser/build_artifacts.mjs');
+  expect(publishWorkflow).toContain('gh release upload');
+});

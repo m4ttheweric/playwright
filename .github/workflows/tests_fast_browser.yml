@@ -1,0 +1,34 @@
+name: Fast Browser
+
+on:
+  pull_request:
+    paths:
+      - 'packages/extension/**'
+      - 'packages/fast-browser-mcp/**'
+      - 'packages/playwright-core/src/tools/mcp/**'
+      - 'packages/playwright-core/src/tools/utils/mcp/**'
+      - 'tests/mcp/fast-browser-*.spec.ts'
+      - 'tests/extension/**'
+      - 'utils/fast_browser/**'
+      - '.github/workflows/tests_fast_browser.yml'
+      - '.github/workflows/publish_fast_browser.yml'
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 22
+    - run: npm ci
+    - run: npx playwright install chromium
+    - run: npm run build
+    - run: npm run test-mcp -- fast-browser-contract.spec.ts fast-browser-artifacts.spec.ts run-code.spec.ts snapshot-mode.spec.ts timeouts.spec.ts
+    - run: npm run test-extension -- extension.spec.ts multi-connection.spec.ts tab-grouping.spec.ts
+    - run: node utils/fast_browser/build_artifacts.mjs --version 0.1.0-ci.${{ github.run_number }} --out-dir fast-browser-dist
+    - name: Upload Fast Browser artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: fast-browser-artifacts
+        path: fast-browser-dist

@@ -14,6 +14,22 @@ The Fast Browser Chrome Extension allows you to connect to pages in your existin
 
 Install [Fast Browser](https://github.com/m4ttheweric/mattstack/tree/main/plugins/fast-browser).
 
+Until a Fast Browser Chrome Web Store listing exists, install the extension zip
+unpacked from the release artifact.
+
+### Build release artifacts
+
+Build the runtime tarball, unpacked extension zip, and release manifest locally:
+
+```bash
+npm ci
+npm run build
+node utils/fast_browser/build_artifacts.mjs --version 0.1.0-alpha.1 --out-dir fast-browser-dist
+```
+
+The release JSON is the only file that `mattstack/runtime-lock.json` should
+consume. It names the runtime and extension artifacts and pins their checksums.
+
 ### Configure Fast Browser MCP server
 
 Configure Fast Browser MCP server to connect to the browser using the extension by passing the `--extension` option when running the MCP server:
