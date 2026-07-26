@@ -141,7 +141,7 @@ playwright-cli attach --cdp=http://localhost:9222
 
 ### Attach via browser extension
 
-Connect to a browser with the Playwright extension installed:
+Connect to a browser with the default Playwright Extension installed:
 
 ```bash
 playwright-cli attach --extension

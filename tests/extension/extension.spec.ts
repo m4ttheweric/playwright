@@ -30,8 +30,8 @@ test('accepts a configured extension id', async ({}, testInfo) => {
 
   expect(await isPlaywrightExtensionInstalled(userDataDir, extensionId)).toBe(true);
   expect(await isPlaywrightExtensionInstalled(
-    userDataDir,
-    'ponmlkjihgfedcbaponmlkjihgfedcba',
+      userDataDir,
+      'ponmlkjihgfedcbaponmlkjihgfedcba',
   )).toBe(false);
 });
 
@@ -297,7 +297,9 @@ test(`--browser <channel> selects channel-specific userDataDir`, {
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
   })).toHaveResponse({
-    error: expect.stringContaining(`Browser extension "mmlmfjhmonkocbjadbfplnigmagldckm" not found in "${expectedUserDataDir}".`),
+    error: expect.stringContaining(
+        `Browser extension "mmlmfjhmonkocbjadbfplnigmagldckm" not found in "${expectedUserDataDir}". ` +
+        'Install it from https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm'),
     isError: true,
   });
 });

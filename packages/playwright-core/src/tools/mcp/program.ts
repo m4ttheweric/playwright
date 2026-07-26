@@ -28,9 +28,7 @@ import type { Command } from 'commander';
 import type { ClientInfo } from '../utils/mcp/server';
 import type * as playwright from '../../..';
 
-const version = packageJSON.version;
-
-export function decorateMCPCommand(command: Command) {
+export function decorateMCPCommand(command: Command, serverVersion: string = packageJSON.version) {
   command
       .option('--allowed-hosts <hosts...>', 'comma-separated list of hosts this server is allowed to serve from. Defaults to the host the server is bound to. Pass \'*\' to disable the host check.', commaSeparatedList)
       .option('--allowed-origins <origins>', 'semicolon-separated list of TRUSTED origins to allow the browser to request. Default is to allow all.\nImportant: *does not* serve as a security boundary and *does not* affect redirects. ', semicolonSeparatedList)
@@ -107,7 +105,7 @@ export function decorateMCPCommand(command: Command) {
         const factory: mcpServer.ServerBackendFactory = {
           name: 'Playwright',
           nameInConfig: 'playwright',
-          version,
+          version: serverVersion,
           toolSchemas: tools.map(tool => tool.schema),
           create: async (clientInfo: ClientInfo) => {
             if (useSharedBrowser && !sharedBrowserPromise) {

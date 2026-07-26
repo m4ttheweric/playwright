@@ -4,9 +4,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const defaultRepositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixedTimestamp = new Date('1980-01-01T00:00:00.000Z');
 const versionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+const relevantSourcePaths = [
+  'LICENSE',
+  'NOTICE',
+  'package.json',
+  'package-lock.json',
+  'tsconfig.json',
+  'packages',
+  'utils',
+];
 
 function parseArguments(argv) {
   let productVersion;
@@ -75,7 +84,7 @@ function normalizeMetadata(directory) {
   }
 }
 
-function copyLauncher(destination, productVersion) {
+function copyLauncher(repositoryRoot, destination, productVersion) {
   const launcherSource = path.join(repositoryRoot, 'packages', 'fast-browser-mcp');
   fs.cpSync(launcherSource, destination, { recursive: true });
   const packageJsonPath = path.join(destination, 'package.json');
@@ -84,7 +93,7 @@ function copyLauncher(destination, productVersion) {
   fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
 }
 
-function copyPlaywrightCorePayload(destination, stagingDir) {
+function copyPlaywrightCorePayload(repositoryRoot, destination, stagingDir) {
   const coreSource = path.join(repositoryRoot, 'packages', 'playwright-core');
   const packageDir = path.join(stagingDir, 'npm-pack');
   const unpackDir = path.join(stagingDir, 'npm-unpack');
@@ -129,28 +138,126 @@ function createExtensionArchive(extensionDir, archive) {
   });
 }
 
-function sourceCommit() {
+function sourceCommit(repositoryRoot) {
   return run('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot }).stdout.trim();
 }
 
-function promote(stagedFile, outputFile) {
-  fs.renameSync(stagedFile, outputFile);
+export function resolveOutputDirectory(outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  return fs.realpathSync(outDir);
 }
 
-function buildArtifacts({ productVersion, outDir }) {
+export function createArtifactStagingDirectory(outDir) {
+  const physicalOutDir = resolveOutputDirectory(outDir);
+  return fs.mkdtempSync(path.join(physicalOutDir, '.fast-browser-artifacts-'));
+}
+
+function assertCleanRelevantSource(repositoryRoot) {
+  const status = run('git', [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+    '--',
+    ...relevantSourcePaths,
+  ], { cwd: repositoryRoot }).stdout;
+  const changes = status.split('\0').filter(Boolean);
+  if (changes.length)
+    throw new Error(`Cannot build Fast Browser artifacts from dirty relevant source:\n${changes.join('\n')}`);
+}
+
+export function verifyRepositoryProvenance(repositoryRoot, expectedCommit) {
+  assertCleanRelevantSource(repositoryRoot);
+  const actualCommit = sourceCommit(repositoryRoot);
+  if (actualCommit !== expectedCommit)
+    throw new Error(`Source commit changed during Fast Browser build: ${expectedCommit} -> ${actualCommit}`);
+}
+
+export function prepareRepositoryForArtifactBuild(repositoryRoot, dependencies = {}) {
+  assertCleanRelevantSource(repositoryRoot);
+  const commit = sourceCommit(repositoryRoot);
+  fs.rmSync(path.join(repositoryRoot, 'packages', 'playwright-core', 'lib'), { recursive: true, force: true });
+  fs.rmSync(path.join(repositoryRoot, 'packages', 'extension', 'dist'), { recursive: true, force: true });
+  const runBuild = dependencies.runBuild ?? (buildRoot => {
+    run(process.execPath, ['utils/build/build.js'], { cwd: buildRoot, stdio: 'inherit' });
+  });
+  runBuild(repositoryRoot);
+  verifyRepositoryProvenance(repositoryRoot, commit);
+  return commit;
+}
+
+export function publishReleaseSet(stagedFiles, outputFiles, dependencies = {}) {
+  if (stagedFiles.length !== outputFiles.length)
+    throw new Error('Staged and output release file counts must match.');
+  const renameSync = dependencies.renameSync ?? fs.renameSync;
+  const backupDir = path.join(path.dirname(stagedFiles[0]), 'previous-release');
+  fs.mkdirSync(backupDir);
+  const backups = [];
+  const promoted = [];
+  const roles = ['runtime', 'extension', 'manifest'];
+  try {
+    for (let index = 0; index < outputFiles.length; ++index) {
+      const outputFile = outputFiles[index];
+      if (!fs.existsSync(outputFile))
+        continue;
+      const backupFile = path.join(backupDir, `${index}-${path.basename(outputFile)}`);
+      renameSync(outputFile, backupFile);
+      backups.push({ outputFile, backupFile });
+      dependencies.onTransactionBoundary?.(`backup:${roles[index]}`);
+    }
+    for (let index = 0; index < stagedFiles.length; ++index) {
+      renameSync(stagedFiles[index], outputFiles[index]);
+      promoted.push(outputFiles[index]);
+      dependencies.onTransactionBoundary?.(`promote:${roles[index]}`);
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const outputFile of promoted.reverse()) {
+      try {
+        fs.rmSync(outputFile, { force: true });
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    for (const { outputFile, backupFile } of backups.reverse()) {
+      try {
+        renameSync(backupFile, outputFile);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length) {
+      const recoveryDirectory = path.dirname(stagedFiles[0]);
+      const aggregate = new AggregateError(
+          [error, ...rollbackErrors],
+          `Fast Browser release rollback failed. Recovery files preserved at ${recoveryDirectory}`);
+      aggregate.recoveryDirectory = recoveryDirectory;
+      throw aggregate;
+    }
+    throw error;
+  }
+}
+
+export function packagePreparedArtifacts({ productVersion, outDir, repositoryRoot, sourceCommit: commit }, dependencies = {}) {
   const extensionDir = path.join(repositoryRoot, 'packages', 'extension', 'dist');
   const extensionManifest = JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
   if (typeof extensionManifest.key !== 'string')
     throw new Error('The extension manifest must contain a public key.');
 
-  fs.mkdirSync(outDir, { recursive: true });
-  const stagingDir = fs.mkdtempSync(path.join(path.dirname(outDir), `.${path.basename(outDir)}-fast-browser-artifacts-`));
+  outDir = resolveOutputDirectory(outDir);
+  const stagingDir = createArtifactStagingDirectory(outDir);
+  let preserveStaging = false;
   try {
     const runtimeRoot = path.join(stagingDir, 'fast-browser-mcp');
     const stagedExtensionDir = path.join(stagingDir, 'extension');
-    copyLauncher(runtimeRoot, productVersion);
-    copyPlaywrightCorePayload(path.join(runtimeRoot, 'playwright-core'), stagingDir);
+    copyLauncher(repositoryRoot, runtimeRoot, productVersion);
+    copyPlaywrightCorePayload(repositoryRoot, path.join(runtimeRoot, 'playwright-core'), stagingDir);
     fs.cpSync(extensionDir, stagedExtensionDir, { recursive: true });
+    fs.copyFileSync(path.join(repositoryRoot, 'LICENSE'), path.join(stagedExtensionDir, 'LICENSE'));
+    fs.copyFileSync(path.join(repositoryRoot, 'NOTICE'), path.join(stagedExtensionDir, 'NOTICE'));
+    fs.copyFileSync(
+        path.join(repositoryRoot, 'packages', 'extension', 'ThirdPartyNotices.txt'),
+        path.join(stagedExtensionDir, 'ThirdPartyNotices.txt'));
     normalizeMetadata(runtimeRoot);
     normalizeMetadata(stagedExtensionDir);
 
@@ -165,11 +272,13 @@ function buildArtifacts({ productVersion, outDir }) {
     const stagedReleaseManifest = path.join(stagingDir, releaseFile);
     createRuntimeArchive(runtimeRoot, stagedRuntimeArchive);
     createExtensionArchive(stagedExtensionDir, stagedExtensionArchive);
+    const verifyProvenance = dependencies.verifyProvenance ?? verifyRepositoryProvenance;
+    verifyProvenance(repositoryRoot, commit);
 
     const release = {
       schemaVersion: 1,
       productVersion,
-      sourceCommit: sourceCommit(),
+      sourceCommit: commit,
       protocolVersion: 2,
       runtime: {
         file: runtimeFile,
@@ -184,13 +293,28 @@ function buildArtifacts({ productVersion, outDir }) {
       },
     };
     fs.writeFileSync(stagedReleaseManifest, `${JSON.stringify(release, null, 2)}\n`);
-    promote(stagedRuntimeArchive, runtimeArchive);
-    promote(stagedExtensionArchive, extensionArchive);
-    promote(stagedReleaseManifest, releaseManifest);
+    publishReleaseSet(
+        [stagedRuntimeArchive, stagedExtensionArchive, stagedReleaseManifest],
+        [runtimeArchive, extensionArchive, releaseManifest],
+        {
+          renameSync: dependencies.renameSync,
+          onTransactionBoundary: dependencies.onTransactionBoundary,
+        });
     console.log(`Built ${runtimeFile} and ${extensionFile}`);
+  } catch (error) {
+    preserveStaging = error?.recoveryDirectory === stagingDir;
+    throw error;
   } finally {
-    fs.rmSync(stagingDir, { recursive: true, force: true });
+    if (!preserveStaging)
+      fs.rmSync(stagingDir, { recursive: true, force: true });
   }
 }
 
-buildArtifacts(parseArguments(process.argv.slice(2)));
+export function buildArtifacts({ productVersion, outDir }) {
+  const repositoryRoot = defaultRepositoryRoot;
+  const commit = prepareRepositoryForArtifactBuild(repositoryRoot);
+  packagePreparedArtifacts({ productVersion, outDir, repositoryRoot, sourceCommit: commit });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  buildArtifacts(parseArguments(process.argv.slice(2)));

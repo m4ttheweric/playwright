@@ -52,8 +52,8 @@ function extensionIdFromManifestKey(key: string): string {
 }
 
 const extensionManifest = JSON.parse(fsSync.readFileSync(
-  path.resolve(__dirname, '../../packages/extension/manifest.json'),
-  'utf8',
+    path.resolve(__dirname, '../../packages/extension/manifest.json'),
+    'utf8',
 ));
 export const extensionId = extensionIdFromManifestKey(extensionManifest.key);
 
