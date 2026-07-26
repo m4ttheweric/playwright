@@ -19,6 +19,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync, spawnSync } from 'child_process';
+import { parse } from 'yaml';
 import { test, expect } from './fixtures';
 
 const rootDir = path.resolve(__dirname, '../..');
@@ -125,4 +126,13 @@ test('release workflows call the checked-in artifact builder', () => {
   expect(testWorkflow).toContain('npm run test-extension -- extension.spec.ts multi-connection.spec.ts tab-grouping.spec.ts');
   expect(publishWorkflow).toContain('node utils/fast_browser/build_artifacts.mjs');
   expect(publishWorkflow).toContain('gh release upload');
+});
+
+test('Fast Browser CI runs when every focused MCP test changes', () => {
+  const workflow = parse(fs.readFileSync('.github/workflows/tests_fast_browser.yml', 'utf8'));
+  expect(workflow.on.pull_request.paths).toEqual(expect.arrayContaining([
+    'tests/mcp/run-code.spec.ts',
+    'tests/mcp/snapshot-mode.spec.ts',
+    'tests/mcp/timeouts.spec.ts',
+  ]));
 });

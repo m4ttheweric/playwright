@@ -4,6 +4,9 @@ This package is the launcher for the self-contained Fast Browser MCP runtime.
 The release artifact bundles the forked `playwright-core` npm payload and does
 not install dependencies when it starts.
 
+Until a Fast Browser store listing exists, install the extension unpacked from
+its release zip.
+
 ## Build release artifacts
 
 Build the runtime tarball, unpacked extension zip, and release manifest locally:
