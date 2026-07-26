@@ -43,3 +43,4 @@ playwright.env
 .playwright/
 .npmrc
 .worktrees/
+/fast-browser-dist/
