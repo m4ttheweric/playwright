@@ -338,7 +338,8 @@ test(`bypass connection dialog with token`, async ({ browserWithExtension, start
   const page = await browserContext.newPage();
   await page.goto(`chrome-extension://${extensionId}/status.html`);
   const token = await page.locator('.auth-token-code').textContent();
-  const [, value] = token?.split('=') || [];
+  expect(token).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+  expect(token).not.toContain('PLAYWRIGHT_MCP_EXTENSION_TOKEN=');
 
   const clientName = 'token-bypass-client';
   const { client } = await startClient({
@@ -347,7 +348,7 @@ test(`bypass connection dialog with token`, async ({ browserWithExtension, start
     // The tab group label and status page use the client workspace folder name.
     roots: [{ name: 'workspace', uri: `file:///tmp/pw-bench/${clientName}` }],
     env: {
-      PLAYWRIGHT_MCP_EXTENSION_TOKEN: value,
+      PLAYWRIGHT_MCP_EXTENSION_TOKEN: token!,
       PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
     },
   });

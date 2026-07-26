@@ -130,6 +130,46 @@ test('disconnecting one client keeps the other alive', async ({ browserWithExten
   expect(response.isError ?? false).toBe(false);
 });
 
+test('token-bypass clients do not steal focus and can reconnect independently', async ({
+  browserWithExtension,
+  startClient,
+  server,
+}) => {
+  const browserContext = await browserWithExtension.launch();
+  const keeper = await browserContext.newPage();
+  await keeper.goto(server.PREFIX + '/keeper');
+  await keeper.bringToFront();
+
+  const statusPage = await browserContext.newPage();
+  await statusPage.goto(`chrome-extension://${extensionId}/status.html`);
+  const token = await statusPage.locator('.auth-token-code').textContent();
+  await statusPage.close();
+
+  const connect = async (name: string) => {
+    const { client } = await startClient({
+      args: ['--extension', `--extension-id=${extensionId}`],
+      clientName: name,
+      roots: [{ name: 'workspace', uri: `file:///tmp/${name}` }],
+      env: {
+        PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+        PLAYWRIGHT_MCP_EXTENSION_TOKEN: token!,
+      },
+    });
+    await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/' + name } });
+    return client;
+  };
+
+  const clientA = await connect('claude');
+  const clientB = await connect('codex');
+  expect(await keeper.evaluate(() => document.hasFocus())).toBe(true);
+  await clientA.close();
+  await connect('claude-reconnected');
+  expect((await clientB.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX + '/codex-still-alive' },
+  })).isError ?? false).toBe(false);
+});
+
 test('tab group label uses the client workspace folder name', async ({ browserWithExtension, startClient, server }) => {
   server.setContent('/a', '<title>PageA</title><body>A</body>', 'text/html');
   const browserContext = await browserWithExtension.launch();

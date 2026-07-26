@@ -31,20 +31,23 @@ export const AuthTokenSection: React.FC<{}> = ({}) => {
   return (
     <div className='auth-token-section'>
       <div className='auth-token-description'>
-        Set this environment variable to bypass the connection dialog:
+        Paste this token into the hidden Fast Browser setup prompt to enable automatic reconnect:
       </div>
       <div className='auth-token-container'>
-        <code className='auth-token-code'>{authTokenCode(authToken)}</code>
-        <button className='auth-token-refresh' title='Generate new token' aria-label='Generate new token'onClick={onRegenerateToken}>{icons.refresh()}</button>
-        <CopyToClipboard value={authTokenCode(authToken)} />
+        <code className='auth-token-code'>{authToken}</code>
+        <button
+          className='auth-token-refresh'
+          title='Generate new token'
+          aria-label='Generate new token'
+          onClick={onRegenerateToken}
+        >
+          {icons.refresh()}
+        </button>
+        <CopyToClipboard value={authToken} />
       </div>
     </div>
   );
 };
-
-function authTokenCode(authToken: string) {
-  return `PLAYWRIGHT_MCP_EXTENSION_TOKEN=${authToken}`;
-}
 
 function generateAuthToken(): string {
   // Generate a cryptographically secure random token

@@ -218,4 +218,6 @@ test('browser_run_code_unsafe filename with args', async ({ client, server }) =>
     },
   }));
   expect(response.result).toContain('case C-77 at');
+  expect(response.code).toContain('{"caseId":"C-77"}');
+  expect(response.code).not.toContain('- Page URL:');
 });
