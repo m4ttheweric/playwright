@@ -164,6 +164,7 @@ test('token-bypass clients do not steal focus and can reconnect independently', 
   expect(await keeper.evaluate(() => document.hasFocus())).toBe(true);
   await clientA.close();
   await connect('claude-reconnected');
+  expect(await keeper.evaluate(() => document.hasFocus())).toBe(true);
   expect((await clientB.callTool({
     name: 'browser_navigate',
     arguments: { url: server.PREFIX + '/codex-still-alive' },
