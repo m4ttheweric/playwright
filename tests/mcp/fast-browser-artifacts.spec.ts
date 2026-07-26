@@ -21,13 +21,19 @@ import path from 'path';
 import { execFileSync, spawnSync } from 'child_process';
 import { test, expect } from './fixtures';
 
-test('builds self-contained Fast Browser artifacts', async () => {
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-'));
+const rootDir = path.resolve(__dirname, '../..');
+
+function buildArtifacts(outDir: string, version: string, env?: NodeJS.ProcessEnv) {
   execFileSync(process.execPath, [
     'utils/fast_browser/build_artifacts.mjs',
-    '--version', '0.1.0-test.1',
+    '--version', version,
     '--out-dir', outDir,
-  ], { cwd: path.resolve(__dirname, '../..'), stdio: 'inherit' });
+  ], { cwd: rootDir, env, stdio: 'inherit' });
+}
+
+test('builds self-contained Fast Browser artifacts', async () => {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-'));
+  buildArtifacts(outDir, '0.1.0-test.1');
 
   const release = JSON.parse(fs.readFileSync(
     path.join(outDir, 'fast-browser-release-0.1.0-test.1.json'),
@@ -54,18 +60,12 @@ test('builds self-contained Fast Browser artifacts', async () => {
 });
 
 test('builds reproducible Fast Browser artifact bytes', () => {
-  const rootDir = path.resolve(__dirname, '../..');
   const outDirs = [
     fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-a-')),
     fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-b-')),
   ];
-  for (const outDir of outDirs) {
-    execFileSync(process.execPath, [
-      'utils/fast_browser/build_artifacts.mjs',
-      '--version', '0.1.0-test.2',
-      '--out-dir', outDir,
-    ], { cwd: rootDir, stdio: 'inherit' });
-  }
+  for (const outDir of outDirs)
+    buildArtifacts(outDir, '0.1.0-test.2');
 
   const artifacts = outDirs.map(outDir => JSON.parse(fs.readFileSync(
     path.join(outDir, 'fast-browser-release-0.1.0-test.2.json'),
@@ -77,4 +77,43 @@ test('builds reproducible Fast Browser artifact bytes', () => {
     expect(first).toEqual(second);
     expect(artifacts[0][artifact].sha256).toBe(artifacts[1][artifact].sha256);
   }
+});
+
+test('keeps the previous release set when artifact creation fails', () => {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-'));
+  const version = '0.1.0-test.3';
+  buildArtifacts(outDir, version);
+
+  const releaseFile = `fast-browser-release-${version}.json`;
+  const release = JSON.parse(fs.readFileSync(path.join(outDir, releaseFile), 'utf8'));
+  const previousFiles = [release.runtime.file, release.extension.file, releaseFile];
+  const previousBytes = new Map(previousFiles.map(file => [file, fs.readFileSync(path.join(outDir, file))]));
+  const launcherReadme = path.join(rootDir, 'packages', 'fast-browser-mcp', 'README.md');
+  const originalReadme = fs.readFileSync(launcherReadme);
+  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-zip-shim-'));
+  const zipShim = path.join(shimDir, 'zip');
+  fs.writeFileSync(zipShim, '#!/bin/sh\nexit 7\n', { mode: 0o755 });
+
+  try {
+    fs.appendFileSync(launcherReadme, '\nTemporary artifact test change.\n');
+    expect(() => buildArtifacts(outDir, version, {
+      ...process.env,
+      PATH: `${shimDir}${path.delimiter}${process.env.PATH}`,
+    })).toThrow();
+    for (const [file, bytes] of previousBytes)
+      expect(fs.readFileSync(path.join(outDir, file))).toEqual(bytes);
+  } finally {
+    fs.writeFileSync(launcherReadme, originalReadme);
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
+});
+
+test('stages artifacts beside the output directory', () => {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-'));
+  const unavailableTmpDir = path.join(outDir, 'does-not-exist');
+  buildArtifacts(outDir, '0.1.0-test.4', {
+    ...process.env,
+    TMPDIR: unavailableTmpDir,
+  });
+  expect(fs.existsSync(path.join(outDir, 'fast-browser-release-0.1.0-test.4.json'))).toBe(true);
 });

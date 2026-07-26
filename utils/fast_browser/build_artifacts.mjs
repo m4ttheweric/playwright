@@ -1,6 +1,5 @@
 import crypto from 'crypto';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
@@ -134,6 +133,10 @@ function sourceCommit() {
   return run('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot }).stdout.trim();
 }
 
+function promote(stagedFile, outputFile) {
+  fs.renameSync(stagedFile, outputFile);
+}
+
 function buildArtifacts({ productVersion, outDir }) {
   const extensionDir = path.join(repositoryRoot, 'packages', 'extension', 'dist');
   const extensionManifest = JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
@@ -141,7 +144,7 @@ function buildArtifacts({ productVersion, outDir }) {
     throw new Error('The extension manifest must contain a public key.');
 
   fs.mkdirSync(outDir, { recursive: true });
-  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-'));
+  const stagingDir = fs.mkdtempSync(path.join(path.dirname(outDir), `.${path.basename(outDir)}-fast-browser-artifacts-`));
   try {
     const runtimeRoot = path.join(stagingDir, 'fast-browser-mcp');
     const stagedExtensionDir = path.join(stagingDir, 'extension');
@@ -153,12 +156,15 @@ function buildArtifacts({ productVersion, outDir }) {
 
     const runtimeFile = `fast-browser-mcp-${productVersion}.tar.gz`;
     const extensionFile = `fast-browser-extension-${productVersion}.zip`;
+    const releaseFile = `fast-browser-release-${productVersion}.json`;
     const runtimeArchive = path.join(outDir, runtimeFile);
     const extensionArchive = path.join(outDir, extensionFile);
-    fs.rmSync(runtimeArchive, { force: true });
-    fs.rmSync(extensionArchive, { force: true });
-    createRuntimeArchive(runtimeRoot, runtimeArchive);
-    createExtensionArchive(stagedExtensionDir, extensionArchive);
+    const stagedRuntimeArchive = path.join(stagingDir, runtimeFile);
+    const stagedExtensionArchive = path.join(stagingDir, extensionFile);
+    const releaseManifest = path.join(outDir, releaseFile);
+    const stagedReleaseManifest = path.join(stagingDir, releaseFile);
+    createRuntimeArchive(runtimeRoot, stagedRuntimeArchive);
+    createExtensionArchive(stagedExtensionDir, stagedExtensionArchive);
 
     const release = {
       schemaVersion: 1,
@@ -167,17 +173,20 @@ function buildArtifacts({ productVersion, outDir }) {
       protocolVersion: 2,
       runtime: {
         file: runtimeFile,
-        sha256: sha256(runtimeArchive),
+        sha256: sha256(stagedRuntimeArchive),
         node: '>=20',
       },
       extension: {
         file: extensionFile,
-        sha256: sha256(extensionArchive),
+        sha256: sha256(stagedExtensionArchive),
         id: extensionIdFromManifestKey(extensionManifest.key),
         version: extensionManifest.version,
       },
     };
-    fs.writeFileSync(path.join(outDir, `fast-browser-release-${productVersion}.json`), `${JSON.stringify(release, null, 2)}\n`);
+    fs.writeFileSync(stagedReleaseManifest, `${JSON.stringify(release, null, 2)}\n`);
+    promote(stagedRuntimeArchive, runtimeArchive);
+    promote(stagedExtensionArchive, extensionArchive);
+    promote(stagedReleaseManifest, releaseManifest);
     console.log(`Built ${runtimeFile} and ${extensionFile}`);
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });
