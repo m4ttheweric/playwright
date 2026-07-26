@@ -109,6 +109,11 @@ export type Config = {
    */
   extension?: boolean;
 
+  /**
+   * Chrome extension id used by --extension.
+   */
+  extensionId?: string;
+
   server?: {
     /**
      * The port to listen on for SSE or MCP transport.

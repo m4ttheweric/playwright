@@ -18,24 +18,28 @@ import debug from 'debug';
 import { createHttpServer, startHttpServer } from '@utils/network';
 import { defaultUserDataDirForChannel } from '@utils/chromiumChannels';
 import { playwright } from '../../inprocess';
-import { isPlaywrightExtensionInstalled, playwrightExtensionInstallUrl } from '../utils/extension';
+import { isPlaywrightExtensionInstalled } from '../utils/extension';
 import { CDPRelayServer } from './cdpRelay';
 
 import type * as playwrightTypes from '../../..';
 
 const debugLogger = debug('pw:mcp:relay');
 
-export async function createExtensionBrowser(channel: string, executablePath: string | undefined, clientName: string, clientCwd?: string): Promise<playwrightTypes.Browser> {
+export async function createExtensionBrowser(channel: string, executablePath: string | undefined, clientName: string, clientCwd: string | undefined, extensionId: string, extensionInstallUrl: string | undefined): Promise<playwrightTypes.Browser> {
   // Custom executablePath may target a browser in a different filesystem (e.g. Windows chrome.exe from WSL2), so the local profile path is not meaningful.
   if (!executablePath) {
     const userDataDir = process.env.PWTEST_EXTENSION_USER_DATA_DIR ?? defaultUserDataDirForChannel(channel);
-    if (userDataDir && !await isPlaywrightExtensionInstalled(userDataDir))
-      throw new Error(`Playwright Extension not found in "${userDataDir}". Install it from ${playwrightExtensionInstallUrl}`);
+    if (userDataDir && !await isPlaywrightExtensionInstalled(userDataDir, extensionId)) {
+      const installHint = extensionInstallUrl
+        ? ` Install it from ${extensionInstallUrl}`
+        : ' Install the matching extension and run the command again.';
+      throw new Error(`Browser extension "${extensionId}" not found in "${userDataDir}".${installHint}`);
+    }
   }
 
   const httpServer = createHttpServer();
   await startHttpServer(httpServer, {});
-  const relay = new CDPRelayServer(httpServer, channel, executablePath);
+  const relay = new CDPRelayServer(httpServer, channel, executablePath, extensionId);
   debugLogger(`CDP relay server started, extension endpoint: ${relay.extensionEndpoint()}.`);
 
   try {

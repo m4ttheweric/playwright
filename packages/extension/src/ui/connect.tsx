@@ -60,7 +60,7 @@ const ConnectApp: React.FC = () => {
       try {
         const host = new URL(relayUrl).hostname;
         if (host !== '127.0.0.1' && host !== '[::1]') {
-          setError(`Playwright extension only allows loopback connections (127.0.0.1 or [::1]). Received host: ${host}`);
+          setError(`Fast Browser extension only allows loopback connections (127.0.0.1 or [::1]). Received host: ${host}`);
           return;
         }
       } catch (e) {
@@ -70,7 +70,7 @@ const ConnectApp: React.FC = () => {
 
       setStatus({
         type: 'connecting',
-        message: `"${clientInfo.name}" is trying to connect to the Playwright Extension.`
+        message: `"${clientInfo.name}" is trying to connect to Fast Browser.`
       });
 
       const parsedVersion = parseInt(params.get('protocolVersion') ?? '', 10);
@@ -87,7 +87,7 @@ const ConnectApp: React.FC = () => {
         return;
       }
       if (requestedVersion < SUPPORTED_PROTOCOL_VERSION) {
-        setError('The client uses an unsupported protocol version. Update Playwright MCP or CLI to the latest version.');
+        setError('The client uses an unsupported protocol version. Update Fast Browser MCP or CLI to the latest version.');
         return;
       }
       // The background only records the relay URL; the WS to the relay opens
@@ -205,13 +205,12 @@ const ConnectApp: React.FC = () => {
 };
 
 const VersionMismatchError: React.FC<{ extensionVersion: string }> = ({ extensionVersion }) => {
-  const readmeUrl = 'https://github.com/microsoft/playwright/blob/main/packages/extension/README.md';
-  const chromeWebStoreUrl = 'https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm';
+  const fastBrowserUrl = 'https://github.com/m4ttheweric/mattstack/tree/main/plugins/fast-browser';
   return (
     <div>
-      Playwright client trying to connect requires newer extension version (current version: {extensionVersion}).{' '}
-      Update <a href={chromeWebStoreUrl} target='_blank' rel='noopener noreferrer'>Playwright Extension</a> from the Chrome Web Store to the latest version.{' '}
-      See <a href={readmeUrl} target='_blank' rel='noopener noreferrer'>installation instructions</a> for more details.
+      Fast Browser client trying to connect requires newer extension version (current version: {extensionVersion}).{' '}
+      Update <a href={fastBrowserUrl} target='_blank' rel='noopener noreferrer'>Fast Browser</a> to the latest version.{' '}
+      See <a href={fastBrowserUrl} target='_blank' rel='noopener noreferrer'>installation instructions</a> for more details.
     </div>
   );
 };

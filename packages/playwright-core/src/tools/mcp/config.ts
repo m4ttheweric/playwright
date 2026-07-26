@@ -49,6 +49,7 @@ export type CLIOptions = {
   device?: string;
   endpoint?: string;
   extension?: boolean;
+  extensionId?: string;
   executablePath?: string;
   grantPermissions?: string[];
   headless?: boolean;
@@ -354,6 +355,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
       remoteEndpoint: cliOptions.endpoint,
     },
     extension: cliOptions.extension,
+    extensionId: cliOptions.extensionId,
     server: {
       port: cliOptions.port,
       host: cliOptions.host,
@@ -411,6 +413,7 @@ export function configFromEnv(env?: NodeJS.ProcessEnv): Config & { configFile?: 
   options.device = envToString(e.PLAYWRIGHT_MCP_DEVICE);
   options.executablePath = envToString(e.PLAYWRIGHT_MCP_EXECUTABLE_PATH);
   options.extension = envToBoolean(e.PLAYWRIGHT_MCP_EXTENSION);
+  options.extensionId = envToString(e.PLAYWRIGHT_MCP_EXTENSION_ID);
   options.grantPermissions = commaSeparatedList(e.PLAYWRIGHT_MCP_GRANT_PERMISSIONS);
   options.headless = envToBoolean(e.PLAYWRIGHT_MCP_HEADLESS);
   options.host = envToString(e.PLAYWRIGHT_MCP_HOST);

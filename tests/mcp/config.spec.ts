@@ -173,3 +173,27 @@ test('browser_get_config returns merged config from file, env and cli', async ({
   // From CLI arg (--isolated).
   expect(config.browser.isolated).toBe(true);
 });
+
+test('browser_get_config returns the extension id configured by CLI', async ({ startClient }) => {
+  const { client } = await startClient({
+    args: ['--extension-id=abcdefghijklmnopabcdefghijklmnop'],
+    config: { capabilities: ['config'] },
+  });
+
+  const result = await client.callTool({ name: 'browser_get_config' });
+  const config = JSON.parse(parseResponse(result).result);
+
+  expect(config.extensionId).toBe('abcdefghijklmnopabcdefghijklmnop');
+});
+
+test('browser_get_config returns the extension id configured by environment', async ({ startClient }) => {
+  const { client } = await startClient({
+    config: { capabilities: ['config'] },
+    env: { PLAYWRIGHT_MCP_EXTENSION_ID: 'ponmlkjihgfedcbaponmlkjihgfedcba' },
+  });
+
+  const result = await client.callTool({ name: 'browser_get_config' });
+  const config = JSON.parse(parseResponse(result).result);
+
+  expect(config.extensionId).toBe('ponmlkjihgfedcbaponmlkjihgfedcba');
+});

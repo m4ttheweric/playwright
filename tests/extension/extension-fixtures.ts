@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import crypto from 'crypto';
+import fsSync from 'fs';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -43,7 +45,17 @@ export type TestFixtures = {
   cli: (args: string[], options?: { env?: Record<string, string> }) => Promise<CliResult>;
 };
 
-export const extensionId = 'mmlmfjhmonkocbjadbfplnigmagldckm';
+function extensionIdFromManifestKey(key: string): string {
+  const alphabet = 'abcdefghijklmnop';
+  const digest = crypto.createHash('sha256').update(Buffer.from(key, 'base64')).digest().subarray(0, 16);
+  return [...digest].map(byte => alphabet[byte >> 4] + alphabet[byte & 15]).join('');
+}
+
+const extensionManifest = JSON.parse(fsSync.readFileSync(
+  path.resolve(__dirname, '../../packages/extension/manifest.json'),
+  'utf8',
+));
+export const extensionId = extensionIdFromManifestKey(extensionManifest.key);
 
 export const test = base.extend<TestFixtures>({
   pathToExtension: async ({}, use, testInfo) => {
@@ -188,7 +200,7 @@ async function runCli(
 
 export async function startWithExtensionFlag(browserWithExtension: BrowserWithExtension, startClient: StartClient, env?: Record<string, string>): Promise<Client> {
   const { client } = await startClient({
-    args: [`--extension`],
+    args: [`--extension`, `--extension-id=${extensionId}`],
     env: {
       ...env,
       PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,

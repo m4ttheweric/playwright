@@ -15,11 +15,29 @@
  */
 
 import fs from 'fs/promises';
+import path from 'path';
 
 import { test, testWithOldExtensionVersion, expect, extensionId, clickAllowAndSelect, connectAndNavigate, startWithExtensionFlag } from './extension-fixtures';
 import { utils } from '../../packages/playwright-core/lib/coreBundle';
 
 const { defaultUserDataDirForChannel } = utils;
+
+test('accepts a configured extension id', async ({}, testInfo) => {
+  const { isPlaywrightExtensionInstalled } = require('../../packages/playwright-core/lib/tools/utils/extension');
+  const userDataDir = testInfo.outputPath('profile');
+  const extensionId = 'abcdefghijklmnopabcdefghijklmnop';
+  await fs.mkdir(path.join(userDataDir, 'Default', 'Extensions', extensionId), { recursive: true });
+
+  expect(await isPlaywrightExtensionInstalled(userDataDir, extensionId)).toBe(true);
+  expect(await isPlaywrightExtensionInstalled(
+    userDataDir,
+    'ponmlkjihgfedcbaponmlkjihgfedcba',
+  )).toBe(false);
+});
+
+test('Fast Browser extension does not reuse the Microsoft extension id', () => {
+  expect(extensionId).not.toBe('mmlmfjhmonkocbjadbfplnigmagldckm');
+});
 
 test(`navigate with extension`, async ({ startExtensionClient, server }) => {
   const { browserContext, client } = await startExtensionClient();
@@ -206,7 +224,7 @@ test(`extension needs update`, async ({ startExtensionClient, server }) => {
   }).catch(() => {});
 
   const confirmationPage = await confirmationPagePromise;
-  await expect(confirmationPage.locator('.status-banner')).toContainText(`Playwright client trying to connect requires newer extension version`);
+  await expect(confirmationPage.locator('.status-banner')).toContainText(`Fast Browser client trying to connect requires newer extension version`);
 });
 
 test(`extension rejects outdated client protocol version`, async ({ startExtensionClient, server }) => {
@@ -223,7 +241,7 @@ test(`extension rejects outdated client protocol version`, async ({ startExtensi
   }).catch(() => {});
 
   const confirmationPage = await confirmationPagePromise;
-  await expect(confirmationPage.locator('.status-banner')).toContainText(`The client uses an unsupported protocol version. Update Playwright MCP or CLI to the latest version.`);
+  await expect(confirmationPage.locator('.status-banner')).toContainText(`The client uses an unsupported protocol version. Update Fast Browser MCP or CLI to the latest version.`);
 });
 
 test(`custom executablePath skips local extension check`, {
@@ -234,7 +252,7 @@ test(`custom executablePath skips local extension check`, {
 
   // Empty profile would normally fail the extension-installed check; it is skipped when executablePath is set.
   const { client } = await startClient({
-    args: [`--extension`, `--executable-path=${executablePath}`],
+    args: [`--extension`, `--extension-id=${extensionId}`, `--executable-path=${executablePath}`],
     env: { PWTEST_EXTENSION_USER_DATA_DIR: test.info().outputPath('empty-profile') },
   });
 
@@ -252,7 +270,7 @@ test(`fails when extension is missing in custom userDataDir`, async ({ startClie
   const userDataDir = test.info().outputPath('empty-profile');
 
   const { client } = await startClient({
-    args: [`--extension`],
+    args: [`--extension`, `--extension-id=${extensionId}`],
     env: { PWTEST_EXTENSION_USER_DATA_DIR: userDataDir },
   });
 
@@ -260,7 +278,7 @@ test(`fails when extension is missing in custom userDataDir`, async ({ startClie
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
   })).toHaveResponse({
-    error: expect.stringContaining(`Playwright Extension not found in "${userDataDir}"`),
+    error: expect.stringContaining(`Browser extension "${extensionId}" not found in "${userDataDir}". Install the matching extension and run the command again.`),
     isError: true,
   });
 });
@@ -279,7 +297,7 @@ test(`--browser <channel> selects channel-specific userDataDir`, {
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
   })).toHaveResponse({
-    error: expect.stringContaining(`Playwright Extension not found in "${expectedUserDataDir}"`),
+    error: expect.stringContaining(`Browser extension "mmlmfjhmonkocbjadbfplnigmagldckm" not found in "${expectedUserDataDir}".`),
     isError: true,
   });
 });
@@ -289,7 +307,7 @@ test(`browser_cookie_list and browser_cookie_set work in extension mode`, {
 }, async ({ browserWithExtension, startClient, server }) => {
   const browserContext = await browserWithExtension.launch();
   const { client } = await startClient({
-    args: [`--extension`],
+    args: [`--extension`, `--extension-id=${extensionId}`],
     config: { capabilities: ['storage'] },
     env: {
       PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
@@ -325,7 +343,7 @@ test(`bypass connection dialog with token`, async ({ browserWithExtension, start
   const clientName = 'token-bypass-client';
   const { client } = await startClient({
     clientName,
-    args: [`--extension`],
+    args: [`--extension`, `--extension-id=${extensionId}`],
     // The tab group label and status page use the client workspace folder name.
     roots: [{ name: 'workspace', uri: `file:///tmp/pw-bench/${clientName}` }],
     env: {

@@ -26,6 +26,7 @@ import { createExtensionBrowser } from './extensionContextFactory';
 import { connectToBrowserAcrossVersions } from '../utils/connect';
 import { serverRegistry } from '../../serverRegistry';
 import { resolveExtensionOptions } from './config';
+import { playwrightExtensionId, playwrightExtensionInstallUrl } from '../utils/extension';
 // eslint-disable-next-line no-restricted-imports
 import { connectToBrowser } from '../../client/connect';
 
@@ -60,7 +61,14 @@ export async function createBrowserWithInfo(config: FullConfig, clientInfo: Clie
     ownership = 'own';
   } else if (config.extension) {
     const { channel, executablePath } = resolveExtensionOptions(cliOptions);
-    browser = await createExtensionBrowser(channel, executablePath, clientInfo.clientName, clientInfo.cwd);
+    browser = await createExtensionBrowser(
+        channel,
+        executablePath,
+        clientInfo.clientName,
+        clientInfo.cwd,
+        config.extensionId ?? playwrightExtensionId,
+        config.extensionId ? undefined : playwrightExtensionInstallUrl,
+    );
     ownership = 'attached';
   } else {
     browser = await createPersistentBrowser(config, clientInfo);

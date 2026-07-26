@@ -49,6 +49,7 @@ export function decorateMCPCommand(command: Command) {
       .option('--mobile', 'emulate a generic mobile device (Pixel 10 for Chromium, iPhone 17 for WebKit). Mobile pages are usually lighter, which saves tokens. Cannot be combined with --device.')
       .option('--executable-path <path>', 'path to the browser executable.')
       .option('--extension', 'Connect to a running browser instance (Edge/Chrome only). Requires the "Playwright Extension" to be installed.')
+      .option('--extension-id <id>', 'Chrome extension id used by --extension')
       .option('--endpoint <endpoint>', 'Bound browser endpoint to connect to.')
       .option('--grant-permissions <permissions...>', 'List of permissions to grant to the browser context, for example "geolocation", "clipboard-read", "clipboard-write".', commaSeparatedList)
       .option('--headless', 'run browser in headless mode, headed by default')

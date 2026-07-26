@@ -22,7 +22,7 @@ export const playwrightExtensionId = 'mmlmfjhmonkocbjadbfplnigmagldckm';
 
 export const playwrightExtensionInstallUrl = `https://chromewebstore.google.com/detail/playwright-extension/${playwrightExtensionId}`;
 
-export async function isPlaywrightExtensionInstalled(userDataDir: string): Promise<boolean> {
+export async function isPlaywrightExtensionInstalled(userDataDir: string, extensionId: string = playwrightExtensionId): Promise<boolean> {
   // Chrome stores profiles as `Default` and `Profile <N>` subdirs of the user data dir;
   // the extension may be installed into any of them.
   let entries: string[];
@@ -34,20 +34,20 @@ export async function isPlaywrightExtensionInstalled(userDataDir: string): Promi
   for (const entry of entries) {
     if (entry !== 'Default' && !entry.startsWith('Profile '))
       continue;
-    if (await isExtensionInstalledInProfile(path.join(userDataDir, entry)))
+    if (await isExtensionInstalledInProfile(path.join(userDataDir, entry), extensionId))
       return true;
   }
   return false;
 }
 
-async function isExtensionInstalledInProfile(profileDir: string): Promise<boolean> {
+async function isExtensionInstalledInProfile(profileDir: string, extensionId: string): Promise<boolean> {
   // Covers two install shapes: web store drops the extension into <profile>/Extensions/<id>;
   // `--load-extension` does not, and only shows up as the id inside <profile>/Preferences.
-  if (await pathExists(path.join(profileDir, 'Extensions', playwrightExtensionId)))
+  if (await pathExists(path.join(profileDir, 'Extensions', extensionId)))
     return true;
   try {
     const prefs = await fs.promises.readFile(path.join(profileDir, 'Preferences'), 'utf-8');
-    return prefs.includes(`"${playwrightExtensionId}"`);
+    return prefs.includes(`"${extensionId}"`);
   } catch {
     return false;
   }

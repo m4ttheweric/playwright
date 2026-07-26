@@ -61,6 +61,7 @@ export class CDPRelayServer {
   private _wsHost: string;
   private _browserChannel: string;
   private _executablePath?: string;
+  private _extensionId: string;
   private _cdpPath: string;
   private _extensionPath: string;
   private _wss: WebSocketServer;
@@ -70,10 +71,11 @@ export class CDPRelayServer {
   private _handler: ExtensionProtocolV2;
   private _extensionConnectionPromise = new ManualPromise<void>();
 
-  constructor(server: http.Server, browserChannel: string, executablePath?: string) {
+  constructor(server: http.Server, browserChannel: string, executablePath?: string, extensionId: string = playwrightExtensionId) {
     this._wsHost = addressToString(server.address(), { protocol: 'ws' });
     this._browserChannel = browserChannel;
     this._executablePath = executablePath;
+    this._extensionId = extensionId;
     this._protocolVersion = parseInt(process.env.PLAYWRIGHT_EXTENSION_PROTOCOL ?? protocol.VERSION.toString(), 10);
 
     const sendCommand = (method: string, params: any): Promise<any> => {
@@ -111,7 +113,7 @@ export class CDPRelayServer {
 
   private _openConnectPageInBrowser(clientName: string, clientCwd?: string) {
     const mcpRelayEndpoint = `${this._wsHost}${this._extensionPath}`;
-    const url = new URL(`chrome-extension://${playwrightExtensionId}/connect.html`);
+    const url = new URL(`chrome-extension://${this._extensionId}/connect.html`);
     url.searchParams.set('mcpRelayUrl', mcpRelayEndpoint);
     const client = {
       name: clientName,
