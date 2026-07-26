@@ -77,6 +77,60 @@ test('connected tab is in green Playwright group, connect page is closed', async
   }).toEqual({ color: 'green', title: expect.stringMatching(/ #1$/) });
 });
 
+test('connected tab action title names Fast Browser', async ({ browserWithExtension, startClient, server }) => {
+  const browserContext = await browserWithExtension.launch();
+  const page = await browserContext.newPage();
+  await page.goto(server.HELLO_WORLD);
+
+  const client = await startWithExtensionFlag(browserWithExtension, startClient);
+  const connectPagePromise = browserContext.waitForEvent('page', page =>
+    page.url().startsWith(`chrome-extension://${extensionId}/connect.html`)
+  );
+  const navigatePromise = client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  const connectPage = await connectPagePromise;
+  await clickAllowAndSelect(connectPage, 'Welcome');
+  await navigatePromise;
+
+  const [sw] = browserContext.serviceWorkers();
+  await expect.poll(async () => {
+    return sw.evaluate(async () => {
+      const chrome = (globalThis as any).chrome;
+      const [group] = await chrome.tabGroups.query({});
+      const [connectedTab] = group ? await chrome.tabs.query({ groupId: group.id }) : [];
+      return connectedTab ? await chrome.action.getTitle({ tabId: connectedTab.id }) : undefined;
+    });
+  }).toBe('Connected to Fast Browser client');
+});
+
+test('fallback tab group label names Fast Browser', async ({ browserWithExtension, startClient, server }) => {
+  const browserContext = await browserWithExtension.launch();
+  const page = await browserContext.newPage();
+  await page.goto(server.HELLO_WORLD);
+
+  const { client } = await startClient({
+    args: ['--extension', `--extension-id=${extensionId}`],
+    clientName: '',
+    cwd: '/',
+    env: { PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir },
+  });
+  const connectPagePromise = browserContext.waitForEvent('page', page =>
+    page.url().startsWith(`chrome-extension://${extensionId}/connect.html`)
+  );
+  const navigatePromise = client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  const connectPage = await connectPagePromise;
+  await clickAllowAndSelect(connectPage, 'Welcome');
+  await navigatePromise;
+
+  const [sw] = browserContext.serviceWorkers();
+  await expect.poll(async () => {
+    return sw.evaluate(async () => {
+      const chrome = (globalThis as any).chrome;
+      const groups = await chrome.tabGroups.query({});
+      return groups.map((group: any) => group.title);
+    });
+  }).toEqual(['Fast Browser #1']);
+});
+
 test('tab added to group gets auto-attached', async ({ browserWithExtension, startClient, server }) => {
   server.setContent('/extra', '<title>Extra</title><body>Extra content</body>', 'text/html');
 

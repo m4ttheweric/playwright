@@ -28,7 +28,7 @@ async function connectExtensionClient(
   url: string,
 ): Promise<Client> {
   const { client } = await startClient({
-    args: ['--extension'],
+    args: ['--extension', `--extension-id=${extensionId}`],
     clientName,
     // The tab group label is derived from the client workspace folder name.
     roots: [{ name: 'workspace', uri: `file:///tmp/pw-bench/${clientName}` }],
@@ -135,7 +135,7 @@ test('tab group label uses the client workspace folder name', async ({ browserWi
   const browserContext = await browserWithExtension.launch();
 
   const { client } = await startClient({
-    args: ['--extension'],
+    args: ['--extension', `--extension-id=${extensionId}`],
     clientName: 'AgentA',
     roots: [{ name: 'workspace', uri: 'file:///tmp/pw-slug-test/skunk' }],
     env: { PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir },

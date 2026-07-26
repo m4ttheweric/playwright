@@ -130,7 +130,7 @@ class PlaywrightExtension {
       let workspace = clientCwd?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
       if (workspace && workspace.length > 24)
         workspace = workspace.slice(0, 23) + '…';
-      const label = `${workspace || clientName || 'Playwright'} #${id}`;
+      const label = `${workspace || (clientName === 'unknown' ? undefined : clientName) || 'Fast Browser'} #${id}`;
       const style: GroupStyle = { title: label, color: GROUP_COLORS[(id - 1) % GROUP_COLORS.length] };
       const group = new ConnectedTabGroup(connection, tab, style);
       group.onclose = () => this._connections.delete(id);

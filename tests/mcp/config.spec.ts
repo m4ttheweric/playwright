@@ -15,9 +15,21 @@
  */
 
 import fs from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { test, expect, parseResponse } from './fixtures';
 import type { Config } from '../../packages/playwright-core/src/tools/mcp/config.d';
+
+const execFileAsync = promisify(execFile);
+
+test('MCP CLI help names the Fast Browser extension', async () => {
+  const cliPath = require.resolve('../../packages/playwright-core/lib/entry/mcp.js');
+  const { stdout } = await execFileAsync(process.execPath, [cliPath, '--help']);
+
+  expect(stdout).toMatch(/Requires the\s+"Fast\s+Browser" extension to be installed\./);
+  expect(stdout).not.toContain('Playwright Extension');
+});
 
 test('config user data dir', async ({ startClient, server }, testInfo) => {
   server.setContent('/', `

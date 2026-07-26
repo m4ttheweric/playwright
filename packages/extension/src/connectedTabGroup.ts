@@ -17,7 +17,7 @@
 import { RelayConnection, debugLog, isOwnUiUrl } from './relayConnection';
 
 const NON_DEBUGGABLE_SCHEMES = ['chrome:', 'edge:', 'devtools:'];
-const CONNECTED_BADGE = { text: '✓', color: '#4CAF50', title: 'Connected to Playwright client' };
+const CONNECTED_BADGE = { text: '✓', color: '#4CAF50', title: 'Connected to Fast Browser client' };
 // Title used by extension versions that supported a single connection. Still
 // matched during cleanup so an upgrade reconciles groups they left behind.
 const LEGACY_GROUP_TITLE = 'Playwright';
