@@ -24,7 +24,7 @@ import type { Tab } from './tab';
 
 const evaluateSchema = optionalElementSchema.extend({
   function: z.string().describe('() => { /* code */ } or (element) => { /* code */ } when element is provided'),
-  filename: z.string().optional().describe('Filename to save the result to. If not provided, result is returned as text.'),
+  filename: z.string().optional().describe('Filename to save the result to. If not provided, result is returned as text. A relative name resolves inside the session output directory (never the process working directory); an absolute path is used as given. The result reports the resolved absolute path.'),
 });
 
 const evaluate = defineTabTool({

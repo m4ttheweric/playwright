@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+import fs from 'fs';
+import path from 'path';
+
 import { test, expect } from './fixtures';
 
 test('browser_evaluate', async ({ client, server }) => {
@@ -133,6 +136,29 @@ test('browser_evaluate expression', async ({ client, server }) => {
     result: `42`,
     code: `await page.evaluate('() => (Promise.resolve(42))');`,
   });
+});
+
+test('browser_evaluate filename stays inside output dir, never process cwd', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('session-output');
+  const { client } = await startClient({ config: { outputDir } });
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_evaluate',
+    arguments: {
+      function: '() => document.title',
+      filename: 'eval-result.json',
+    },
+  });
+
+  const expectedPath = path.join(outputDir, 'eval-result.json');
+  expect(result.content[0].text).toContain(expectedPath);
+  expect(await fs.promises.readFile(expectedPath, 'utf-8')).toContain('Title');
+  expect(fs.existsSync(testInfo.outputPath('eval-result.json'))).toBe(false);
 });
 
 test('browser_evaluate (error)', async ({ client, server }) => {

@@ -400,16 +400,33 @@ export function outputDir(options: ContextOptions): string {
 }
 
 export async function outputFile(options: ContextOptions, fileName: string, flags: { origin: 'code' | 'llm' }): Promise<string> {
-  const resolvedFile = path.resolve(outputDir(options), fileName);
-  await checkFile(options, resolvedFile, flags);
+  const dir = outputDir(options);
+  let resolvedFile: string;
+  if (path.isAbsolute(fileName)) {
+    // An absolute path is an explicit caller choice; keep the existing
+    // cross-root constraint exactly (output dir or cwd, unless trusted).
+    resolvedFile = fileName;
+    await checkFile(options, resolvedFile, flags);
+  } else {
+    // Relative names always resolve inside the output directory, never
+    // against process.cwd(). Reject anything that escapes it via `..` (or
+    // an embedded absolute component) instead of silently writing outside.
+    resolvedFile = path.resolve(dir, fileName);
+    if (!isTrustedFileOrigin(options, flags) && !isPathInside(dir, resolvedFile))
+      throw new Error(`Output filename "${fileName}" escapes the output directory and was rejected. Output directory: ${dir}`);
+  }
   await fs.promises.mkdir(path.dirname(resolvedFile), { recursive: true });
   debug('pw:mcp:file')(resolvedFile);
   return resolvedFile;
 }
 
+function isTrustedFileOrigin(options: ContextOptions, flags: { origin: 'code' | 'llm' }): boolean {
+  return flags.origin === 'code' || !!options.config.allowUnrestrictedFileAccess || !!options.config.skillMode;
+}
+
 async function checkFile(options: ContextOptions, resolvedFilename: string, flags: { origin: 'code' | 'llm' }) {
   // Trust code and unrestricted file access.
-  if (flags.origin === 'code' || options.config.allowUnrestrictedFileAccess || options.config.skillMode)
+  if (isTrustedFileOrigin(options, flags))
     return;
 
   // Trust llm to use valid characters in file names.

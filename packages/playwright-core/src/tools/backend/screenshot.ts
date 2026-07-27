@@ -32,7 +32,7 @@ type ImageFormat = 'png' | 'jpeg' | 'webp';
 
 const screenshotSchema = optionalElementSchema.extend({
   type: z.enum(['png', 'jpeg', 'webp']).optional().describe('Image format for the screenshot. If unset, inferred from the filename extension, otherwise png.'),
-  filename: z.string().optional().describe('File name to save the screenshot to. Defaults to `page-{timestamp}.{png|jpeg|webp}` if not specified. Prefer relative file names to stay within the output directory.'),
+  filename: z.string().optional().describe('File name to save the screenshot to. Defaults to `page-{timestamp}.{png|jpeg|webp}` if not specified. A relative name resolves inside the session output directory (never the process working directory); an absolute path is used as given. The result reports the resolved absolute path.'),
   fullPage: z.boolean().optional().describe('When true, takes a screenshot of the full scrollable page, instead of the currently visible viewport. Cannot be used with element screenshots.'),
   scale: z.enum(['css', 'device']).default('css').describe('Image resolution scale. "css" produces a screenshot sized in CSS pixels (smaller, consistent across devices). "device" produces a high-resolution screenshot using device pixels (larger, accounts for the device pixel ratio). Default is css.'),
 });

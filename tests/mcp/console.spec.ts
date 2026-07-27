@@ -451,6 +451,31 @@ test('browser_console_messages all option for page errors', async ({ client, ser
   expect(allResponse.result).toContain('page2 error');
 });
 
+test('browser_console_messages filename stays inside output dir, never process cwd', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('session-output');
+  const { client } = await startClient({ config: { outputDir } });
+
+  server.setContent('/', `
+    <!DOCTYPE html>
+    <html><script>console.error("Saved message");</script></html>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_console_messages',
+    arguments: { filename: 'console-dump.log' },
+  });
+
+  const expectedPath = path.join(outputDir, 'console-dump.log');
+  expect(result.content[0].text).toContain(expectedPath);
+  expect(await fs.promises.readFile(expectedPath, 'utf-8')).toContain('Saved message');
+  expect(fs.existsSync(testInfo.outputPath('console-dump.log'))).toBe(false);
+});
+
 test('console log is updated without taking snapshots', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({

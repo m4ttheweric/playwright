@@ -51,10 +51,14 @@ test('state-save saves to custom filename', async ({ cli, server }, testInfo) =>
 
   await cli('open', server.EMPTY_PAGE);
 
-  const { output } = await cli('state-save', 'my-state.json');
-  expect(output).toContain('my-state.json');
+  // A relative filename resolves inside the CLI's own output directory
+  // (`.playwright-cli`), never the process cwd.
+  const stateFile = testInfo.outputPath('.playwright-cli', 'my-state.json');
 
-  const stateFile = testInfo.outputPath('my-state.json');
+  const { output } = await cli('state-save', 'my-state.json');
+  expect(output).toContain(stateFile);
+
+  expect(await fs.promises.stat(testInfo.outputPath('my-state.json')).catch(() => null)).toBeNull();
   expect(await fs.promises.stat(stateFile).catch(() => null)).not.toBeNull();
 });
 
@@ -106,8 +110,13 @@ test('state-save and state-load roundtrip', async ({ cli, server, mcpBrowser }, 
   // Set data
   await cli('eval', '() => { document.cookie = "roundtripCookie=roundtripValue"; localStorage.setItem("roundtripKey", "roundtripValue"); }');
 
-  // Save storage state
-  await cli('state-save', 'roundtrip-state.json');
+  // Save storage state. The output reports the resolved absolute path
+  // (inside the CLI's own output directory, not the process cwd); read it
+  // back from there rather than assuming a location.
+  const { output: saveOutput } = await cli('state-save', 'roundtrip-state.json');
+  const savedPath = saveOutput.match(/\[Storage state\]\(([^)]+)\)/)?.[1];
+  expect(savedPath).toBeTruthy();
+  expect(path.isAbsolute(savedPath!)).toBe(true);
 
   // Clear storage
   await cli('eval', '() => { document.cookie = "roundtripCookie=; expires=Thu, 01 Jan 1970 00:00:00 GMT"; localStorage.clear(); }');
@@ -117,7 +126,7 @@ test('state-save and state-load roundtrip', async ({ cli, server, mcpBrowser }, 
   expect(clearedResult).toContain('|null');
 
   // Restore storage state
-  await cli('state-load', testInfo.outputPath('roundtrip-state.json'));
+  await cli('state-load', savedPath!);
 
   // Reload to pick up cookies
   await cli('goto', server.EMPTY_PAGE);

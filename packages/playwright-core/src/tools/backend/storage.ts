@@ -25,7 +25,7 @@ const storageState = defineTool({
     title: 'Save storage state',
     description: 'Save storage state (cookies, local storage) to a file for later reuse',
     inputSchema: z.object({
-      filename: z.string().optional().describe('File name to save the storage state to. Defaults to `storage-state-{timestamp}.json` if not specified.'),
+      filename: z.string().optional().describe('File name to save the storage state to. Defaults to `storage-state-{timestamp}.json` if not specified. A relative name resolves inside the session output directory (never the process working directory); an absolute path is used as given. The result reports the resolved absolute path.'),
     }),
     type: 'readOnly',
   },

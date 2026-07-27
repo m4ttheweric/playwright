@@ -15,6 +15,7 @@
  */
 
 import fs from 'fs';
+import path from 'path';
 
 import { test, expect } from './fixtures';
 
@@ -68,20 +69,44 @@ test('save as pdf (filename: output.pdf)', async ({ startClient, mcpBrowser, ser
     snapshot: expect.stringContaining(`- generic [active] [ref=e1]: Hello, world!`),
   });
 
+  // No explicit outputDir is configured, so the default output directory is
+  // `<cwd>/.playwright-mcp`. A relative filename must land there, never
+  // directly in cwd.
+  const expectedPath = testInfo.outputPath('.playwright-mcp', 'output.pdf');
+
   expect(await client.callTool({
     name: 'browser_pdf_save',
     arguments: {
       filename: 'output.pdf',
     },
   })).toHaveResponse({
-    result: expect.stringContaining(`output.pdf`),
+    result: expect.stringContaining(expectedPath),
     code: expect.stringContaining(`await page.pdf(`),
   });
 
-  const files = [...fs.readdirSync(testInfo.outputPath())];
+  expect(fs.existsSync(testInfo.outputPath('output.pdf'))).toBe(false);
+  expect(fs.existsSync(expectedPath)).toBe(true);
+});
 
-  expect(fs.existsSync(testInfo.outputPath())).toBeTruthy();
-  const pdfFiles = files.filter(f => f.endsWith('.pdf'));
-  expect(pdfFiles).toHaveLength(1);
-  expect(pdfFiles[0]).toMatch(/^output.pdf$/);
+test('save as pdf (filename stays inside output dir, never process cwd)', async ({ startClient, mcpBrowser, server }, testInfo) => {
+  test.skip(!!mcpBrowser && !['chromium', 'chrome', 'msedge'].includes(mcpBrowser), 'Save as PDF is only supported in Chromium.');
+  const outputDir = testInfo.outputPath('session-output');
+  const { client } = await startClient({
+    config: { outputDir, capabilities: ['pdf'] },
+  });
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_pdf_save',
+    arguments: { filename: '../escape.pdf' },
+  });
+
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain('escapes the output directory');
+  expect(fs.existsSync(path.join(path.dirname(outputDir), 'escape.pdf'))).toBe(false);
+  expect(fs.existsSync(testInfo.outputPath('escape.pdf'))).toBe(false);
 });

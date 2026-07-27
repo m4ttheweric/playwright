@@ -82,13 +82,17 @@ export class Response {
   }
 
   async resolveClientFile(template: FilenameTemplate, title: string): Promise<ResolvedFile> {
-    let fileName: string;
-    if (template.suggestedFilename)
-      fileName = await this.resolveClientFilename(template.suggestedFilename);
-    else
-      fileName = await this._context.outputFile(template, { origin: 'llm' });
+    // Always resolve through the output directory (never process.cwd()), whether
+    // the filename was suggested by the caller or auto-generated.
+    const fileName = await this._context.outputFile(template, { origin: 'llm' });
     const relativeName = this._computeRelativeTo(fileName);
-    const printableLink = `- [${title}](${relativeName})`;
+    // A caller-supplied filename gets the resolved absolute path reported back:
+    // the caller (which may not know this server's cwd or output directory)
+    // must be able to read back exactly one unambiguous location. Names we
+    // generated ourselves keep the existing workspace-relative link.
+    const printableLink = template.suggestedFilename
+      ? `- [${title}](${fileName})`
+      : `- [${title}](${relativeName})`;
     return { fileName, relativeName, printableLink };
   }
 

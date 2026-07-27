@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import fs from 'fs';
+
 import { test, expect } from './cli-fixtures';
 
 test('screenshot', async ({ cli, server, mcpBrowser }) => {
@@ -45,20 +47,23 @@ test('screenshot --hires', async ({ cli, server, mcpBrowser }) => {
   expect(attachments[0].data).toEqual(expect.any(Buffer));
 });
 
-test('screenshot --filename', async ({ cli, server, mcpBrowser }) => {
+test('screenshot --filename', async ({ cli, server, mcpBrowser }, testInfo) => {
   await cli('open', server.HELLO_WORLD);
   const { output, attachments } = await cli('screenshot', '--filename=screenshot.png');
-  expect(output).toContain('[Screenshot of viewport](./screenshot.png)');
+  // A relative --filename resolves inside `.playwright-cli`, never the
+  // process cwd; the result reports the resolved absolute path.
+  expect(output).toContain(`[Screenshot of viewport](${testInfo.outputPath('.playwright-cli', 'screenshot.png')})`);
+  expect(fs.existsSync(testInfo.outputPath('screenshot.png'))).toBe(false);
   expect(attachments[0].name).toEqual('Screenshot of viewport');
   expect(attachments[0].data).toEqual(expect.any(Buffer));
 });
 
-test('screenshot --filename infers webp from extension', async ({ cli, server, mcpBrowser }) => {
+test('screenshot --filename infers webp from extension', async ({ cli, server, mcpBrowser }, testInfo) => {
   test.skip(mcpBrowser === 'webkit' && process.platform === 'darwin', 'CG on macOS does not include a webp encoder UTI');
 
   await cli('open', server.HELLO_WORLD);
   const { output, attachments } = await cli('screenshot', '--filename=screenshot.webp');
-  expect(output).toContain('[Screenshot of viewport](./screenshot.webp)');
+  expect(output).toContain(`[Screenshot of viewport](${testInfo.outputPath('.playwright-cli', 'screenshot.webp')})`);
   const buffer = attachments[0].data as Buffer;
   expect(buffer.subarray(0, 4).toString('latin1')).toBe('RIFF');
   expect(buffer.subarray(8, 12).toString('latin1')).toBe('WEBP');
@@ -72,11 +77,12 @@ test('pdf', async ({ cli, server, mcpBrowser }) => {
   expect(attachments[0].data).toEqual(expect.any(Buffer));
 });
 
-test('pdf --filename', async ({ cli, server, mcpBrowser }) => {
+test('pdf --filename', async ({ cli, server, mcpBrowser }, testInfo) => {
   test.skip(mcpBrowser !== 'chromium' && mcpBrowser !== 'chrome', 'PDF is only supported in Chromium and Chrome');
   await cli('open', server.HELLO_WORLD);
   const { output, attachments } = await cli('pdf', '--filename=pdf.pdf');
-  expect(output).toContain('[Page as pdf](./pdf.pdf)');
+  expect(output).toContain(`[Page as pdf](${testInfo.outputPath('.playwright-cli', 'pdf.pdf')})`);
+  expect(fs.existsSync(testInfo.outputPath('pdf.pdf'))).toBe(false);
   expect(attachments[0].name).toEqual('Page as pdf');
   expect(attachments[0].data).toEqual(expect.any(Buffer));
 });

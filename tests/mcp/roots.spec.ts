@@ -16,6 +16,7 @@
 
 import crypto from 'crypto';
 import fs from 'fs';
+import path from 'path';
 import { pathToFileURL } from 'url';
 
 import { test, expect } from './fixtures';
@@ -102,7 +103,13 @@ function createHash(data: string): string {
   return crypto.createHash('sha256').update(data).digest('hex').slice(0, 7);
 }
 
-test('should return relative paths when root is specified', async ({ startClient, server }, testInfo) => {
+test('should resolve inside the output dir under the declared root, not the root itself', async ({ startClient, server }, testInfo) => {
+  // The declared MCP root becomes this session's "cwd" for output-dir
+  // defaulting. A relative filename must still resolve inside the output
+  // directory under that root (`<root>/.playwright-mcp`), never directly
+  // into the root itself; the result reports the resolved absolute path so
+  // the caller has exactly one unambiguous location regardless of its own
+  // reference frame.
   const rootPath = testInfo.outputPath('workspace');
   await fs.promises.mkdir(rootPath, { recursive: true });
 
@@ -121,10 +128,15 @@ test('should return relative paths when root is specified', async ({ startClient
     arguments: { url: server.HELLO_WORLD },
   });
 
+  const expectedPath = path.join(rootPath, '.playwright-mcp', 'screenshot.png');
+
   expect(await client.callTool({
     name: 'browser_take_screenshot',
     arguments: { filename: 'screenshot.png' },
   })).toHaveResponse({
-    result: expect.stringContaining(`[Screenshot of viewport](./screenshot.png)`),
+    result: expect.stringContaining(`[Screenshot of viewport](${expectedPath})`),
   });
+
+  expect(fs.existsSync(path.join(rootPath, 'screenshot.png'))).toBe(false);
+  expect(fs.existsSync(expectedPath)).toBe(true);
 });

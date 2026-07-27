@@ -324,6 +324,27 @@ test('browser_network_request rejects out-of-range index', async ({ client, serv
   expect(parsed!.error).toContain('Request #999 not found');
 });
 
+test('browser_network_requests filename stays inside output dir, never process cwd', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('session-output');
+  const { client } = await startClient({ config: { outputDir } });
+
+  server.setContent('/', `<img src="/image.png" />`, 'text/html');
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_network_requests',
+    arguments: { static: true, filename: 'requests.log' },
+  });
+
+  const expectedPath = path.join(outputDir, 'requests.log');
+  expect(result.content[0].text).toContain(expectedPath);
+  expect(await fs.promises.readFile(expectedPath, 'utf-8')).toContain('image.png');
+  expect(fs.existsSync(testInfo.outputPath('requests.log'))).toBe(false);
+});
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

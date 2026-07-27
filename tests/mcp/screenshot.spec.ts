@@ -15,6 +15,7 @@
  */
 
 import fs from 'fs';
+import path from 'path';
 
 import { test, expect } from './fixtures';
 import { jpegjs, PNG } from '../../packages/playwright-core/lib/utilsBundle';
@@ -220,12 +221,18 @@ test('browser_take_screenshot (filename is empty string)', async ({ startClient,
 
 
 test('browser_take_screenshot (filename: "output.png")', async ({ client, server }, testInfo) => {
+  // No explicit outputDir is configured, so the default output directory is
+  // `<cwd>/.playwright-mcp`, a *subdirectory* of the process cwd used to
+  // launch this test's MCP server (testInfo.outputPath()). A relative
+  // filename must land inside that output directory, never directly in cwd.
   expect(await client.callTool({
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
   })).toHaveResponse({
     code: expect.stringContaining(`page.goto('http://localhost`),
   });
+
+  const expectedPath = testInfo.outputPath('.playwright-mcp', 'output.png');
 
   expect(await client.callTool({
     name: 'browser_take_screenshot',
@@ -235,15 +242,101 @@ test('browser_take_screenshot (filename: "output.png")', async ({ client, server
   })).toEqual({
     content: [
       {
-        text: expect.stringContaining(`output.png`),
+        // The result must report the resolved absolute path, not a bare
+        // `./output.png` link that tells the caller nothing about location.
+        text: expect.stringContaining(expectedPath),
         type: 'text',
       },
     ],
   });
 
-  const files = [...fs.readdirSync(testInfo.outputPath())].filter(f => f.endsWith('.png'));
-  expect(files).toHaveLength(1);
-  expect(files[0]).toMatch(/^output\.png$/);
+  // Regression guard for the reported bug: nothing was written to the
+  // caller's cwd itself.
+  expect(fs.existsSync(testInfo.outputPath('output.png'))).toBe(false);
+
+  expect(fs.existsSync(expectedPath)).toBe(true);
+});
+
+test('browser_take_screenshot (filename stays inside output dir, never process cwd)', async ({ startClient, server }, testInfo) => {
+  // Reproduces the reported defect: a relative filename must resolve against
+  // the session's --output-dir, never against the MCP server process's cwd,
+  // even when cwd and outputDir are entirely distinct directories.
+  const callerCwd = testInfo.outputPath('caller-repo');
+  await fs.promises.mkdir(callerCwd, { recursive: true });
+  const outputDir = testInfo.outputPath('session-output');
+
+  const { client } = await startClient({
+    cwd: callerCwd,
+    // Pass the output dir as an absolute CLI argument (rather than
+    // `config: {...}`) so this test does not depend on how the fixture's
+    // config-file-relative-path plumbing interacts with a non-default cwd.
+    args: ['--output-dir', outputDir],
+  });
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  })).toHaveResponse({
+    code: expect.stringContaining(`page.goto('http://localhost`),
+  });
+
+  const result = await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: { filename: 'fb-dag-hidden.png' },
+  });
+
+  const expectedPath = path.join(outputDir, 'fb-dag-hidden.png');
+  expect(result.content[0].text).toContain(expectedPath);
+  expect(fs.existsSync(expectedPath)).toBe(true);
+
+  // The caller's working tree must stay untouched: this is exactly the
+  // silent working-tree pollution the bug report described.
+  expect(fs.existsSync(path.join(callerCwd, 'fb-dag-hidden.png'))).toBe(false);
+  expect(fs.readdirSync(callerCwd)).toEqual([]);
+});
+
+test('browser_take_screenshot (absolute filename keeps working)', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ config: { outputDir } });
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+
+  // An absolute path is an explicit caller choice, inside the existing
+  // allowed roots (output dir or cwd); it must keep working exactly as before.
+  const absoluteTarget = testInfo.outputPath('explicit-abs-output', 'shot.png');
+
+  const result = await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: { filename: absoluteTarget },
+  });
+
+  expect(result.content[0].text).toContain(absoluteTarget);
+  expect(fs.existsSync(absoluteTarget)).toBe(true);
+});
+
+test('browser_take_screenshot (relative traversal is rejected, nothing written)', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ config: { outputDir } });
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: { filename: '../escape.png' },
+  });
+
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain('escapes the output directory');
+
+  // Nothing should land next to the output dir, nor in the process cwd.
+  expect(fs.existsSync(path.join(path.dirname(outputDir), 'escape.png'))).toBe(false);
+  expect(fs.existsSync(testInfo.outputPath('escape.png'))).toBe(false);
 });
 
 test('browser_take_screenshot (imageResponses=omit)', async ({ startClient, server }, testInfo) => {

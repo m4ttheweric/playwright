@@ -37,7 +37,7 @@ const requests = defineTabTool({
     inputSchema: z.object({
       static: z.boolean().default(false).describe('Whether to include successful static resources like images, fonts, scripts, etc. Defaults to false.'),
       filter: z.string().optional().refine(v => !v || isRegexString(v), { message: 'Invalid regular expression' }).describe('Only return requests whose URL matches this regexp (e.g. "/api/.*user").'),
-      filename: z.string().optional().describe('Filename to save the network requests to. If not provided, requests are returned as text.'),
+      filename: z.string().optional().describe('Filename to save the network requests to. If not provided, requests are returned as text. A relative name resolves inside the session output directory (never the process working directory); an absolute path is used as given. The result reports the resolved absolute path.'),
     }),
     type: 'readOnly',
   },
@@ -81,7 +81,7 @@ const request = defineTabTool({
     inputSchema: z.object({
       index: z.number().int().min(1).describe('1-based index of the request, as printed by browser_network_requests.'),
       part: z.enum(REQUEST_PARTS).optional().describe('Return only this part of the request. Omit to return full details.'),
-      filename: z.string().optional().describe('Filename to save the result to. If not provided, output is returned as text.'),
+      filename: z.string().optional().describe('Filename to save the result to. If not provided, output is returned as text. A relative name resolves inside the session output directory (never the process working directory); an absolute path is used as given. The result reports the resolved absolute path.'),
     }),
     type: 'readOnly',
   },

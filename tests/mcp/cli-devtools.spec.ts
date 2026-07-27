@@ -152,22 +152,30 @@ test('request* and response* commands support --filename', async ({ cli, server 
   expect(match).not.toBeNull();
   const num = match![1];
 
-  const read = (file: string) => fs.readFileSync(testInfo.outputPath(file), 'utf-8');
+  // A relative --filename resolves inside the CLI's own output directory
+  // (`.playwright-cli`), never the process cwd; the result reports that
+  // resolved absolute path.
+  const resolved = (file: string) => testInfo.outputPath('.playwright-cli', file);
+  const read = (file: string) => fs.readFileSync(resolved(file), 'utf-8');
 
-  expect((await cli('request', num, '--filename=req.log')).output).toContain('[Request](./req.log)');
+  expect((await cli('request', num, '--filename=req.log')).output).toContain(`[Request](${resolved('req.log')})`);
   expect(read('req.log')).toContain(`[POST] ${server.PREFIX}/api`);
 
-  expect((await cli('request-headers', num, '--filename=req-h.txt')).output).toContain('[Request headers](./req-h.txt)');
+  expect((await cli('request-headers', num, '--filename=req-h.txt')).output).toContain(`[Request headers](${resolved('req-h.txt')})`);
   expect(read('req-h.txt')).toContain('content-type: text/plain;charset=UTF-8');
 
-  expect((await cli('request-body', num, '--filename=req-b.txt')).output).toContain('[Request body](./req-b.txt)');
+  expect((await cli('request-body', num, '--filename=req-b.txt')).output).toContain(`[Request body](${resolved('req-b.txt')})`);
   expect(read('req-b.txt')).toBe('hello');
 
-  expect((await cli('response-headers', num, '--filename=res-h.txt')).output).toContain('[Response headers](./res-h.txt)');
+  expect((await cli('response-headers', num, '--filename=res-h.txt')).output).toContain(`[Response headers](${resolved('res-h.txt')})`);
   expect(read('res-h.txt')).toContain('x-custom-response: response-value');
 
-  expect((await cli('response-body', num, '--filename=res-b.json')).output).toContain('[Response body](./res-b.json)');
+  expect((await cli('response-body', num, '--filename=res-b.json')).output).toContain(`[Response body](${resolved('res-b.json')})`);
   expect(read('res-b.json')).toBe('{"name":"John Doe"}');
+
+  // Regression guard: nothing landed directly in the process cwd.
+  for (const file of ['req.log', 'req-h.txt', 'req-b.txt', 'res-h.txt', 'res-b.json'])
+    expect(fs.existsSync(testInfo.outputPath(file))).toBe(false);
 });
 
 test('response-body returns just the body', async ({ cli, server }) => {
@@ -214,7 +222,7 @@ test('tracing-start-stop', async ({ cli, server }, testInfo) => {
   expect(fs.existsSync(testInfo.outputPath('.playwright-cli', 'traces', `trace-${timestamp}.network`))).toBeTruthy();
 });
 
-test('video-start-stop', async ({ cli, server }) => {
+test('video-start-stop', async ({ cli, server }, testInfo) => {
   await cli('open', server.HELLO_WORLD);
   const { output: videoStartOutput } = await cli('video-start', 'recordings/video.webm', '--size=400x300');
   expect(videoStartOutput).toContain('Video recording started.');
@@ -225,7 +233,11 @@ test('video-start-stop', async ({ cli, server }) => {
   const { output: tabCloseOutput } = await cli('tab-close');
   expect(tabCloseOutput).toContain(`0: (current) [](${server.EMPTY_PAGE})`);
   const { output: videoStopOutput } = await cli('video-stop');
-  expect(videoStopOutput).toContain(`### Result\n- [Video](recordings${path.sep}video.webm)\n- [Video](recordings${path.sep}video-1.webm)`);
+  // A relative --filename resolves inside `.playwright-cli`, never the
+  // process cwd; the result reports the resolved absolute path.
+  const video = (name: string) => testInfo.outputPath('.playwright-cli', 'recordings', name);
+  expect(videoStopOutput).toContain(`### Result\n- [Video](${video('video.webm')})\n- [Video](${video('video-1.webm')})`);
+  expect(fs.existsSync(testInfo.outputPath('recordings'))).toBe(false);
 });
 
 test('video-chapter', async ({ cli, server }) => {

@@ -25,7 +25,7 @@ const videoStart = defineTool({
     title: 'Start video',
     description: 'Start video recording',
     inputSchema: z.object({
-      filename: z.string().optional().describe('Filename to save the video.'),
+      filename: z.string().optional().describe('Filename to save the video. A relative name resolves inside the session output directory (never the process working directory); an absolute path is used as given.'),
       size: z.object({
         width: z.number().describe('Video width'),
         height: z.number().describe('Video height'),
