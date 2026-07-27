@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fast Browser",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Connect your existing Chrome session to Fast Browser for local Claude Code and Codex automation.",
   "permissions": [
     "debugger",

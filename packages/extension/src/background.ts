@@ -15,7 +15,6 @@
  */
 
 import { debugLog } from './relayConnection';
-import { FocusGuard } from './focusGuard';
 import { PendingConnections } from './pendingConnection';
 import { ConnectedTabGroup, cleanupStalePlaywrightGroups, isNonDebuggableUrl } from './connectedTabGroup';
 
@@ -178,7 +177,4 @@ class PlaywrightExtension {
   }
 }
 
-// Installs its own listeners; runs independently of PlaywrightExtension's
-// per-connection bookkeeping since it must react before a connection exists.
-new FocusGuard();
 new PlaywrightExtension();

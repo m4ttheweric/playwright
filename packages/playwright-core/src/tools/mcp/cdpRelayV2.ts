@@ -40,8 +40,8 @@ export class ExtensionProtocolV2 {
   // relay — the model itself is oblivious to this phase.
   private _ready = new ManualPromise<void>();
 
-  constructor(sendCommand: SendCommand, isBackgroundConnection: boolean = false) {
-    this._model = new BrowserModel(sendCommand, isBackgroundConnection);
+  constructor(sendCommand: SendCommand) {
+    this._model = new BrowserModel(sendCommand);
     void this._ready.catch(logUnhandledError);
   }
 
