@@ -45,9 +45,12 @@ test('Fast Browser extension version reflects the focus-fix content change', asy
 
   // The focus fix (2097bb5) changed background.mjs but left manifest.json at
   // 0.2.1, so Chrome reported the same version for two different builds.
-  expect(manifest.version).not.toBe('0.2.1');
+  // Pinning an exact version here would force an edit on every future bump,
+  // so assert the two durable properties instead: the version moved past the
+  // incident, and both manifests agree.
   expect(manifest.version).toBe(packageJson.version);
-  expect(manifest.version).toBe('0.2.2');
+  const versionOrder = (value: string) => value.split('.').map(Number);
+  expect(versionOrder(manifest.version) > versionOrder('0.2.1')).toBe(true);
 });
 
 test(`navigate with extension`, async ({ startExtensionClient, server }) => {
