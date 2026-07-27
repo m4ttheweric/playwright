@@ -39,6 +39,17 @@ test('Fast Browser extension does not reuse the Microsoft extension id', () => {
   expect(extensionId).not.toBe('mmlmfjhmonkocbjadbfplnigmagldckm');
 });
 
+test('Fast Browser extension version reflects the focus-fix content change', async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(__dirname, '../../packages/extension/manifest.json'), 'utf8'));
+  const packageJson = JSON.parse(await fs.readFile(path.join(__dirname, '../../packages/extension/package.json'), 'utf8'));
+
+  // The focus fix (2097bb5) changed background.mjs but left manifest.json at
+  // 0.2.1, so Chrome reported the same version for two different builds.
+  expect(manifest.version).not.toBe('0.2.1');
+  expect(manifest.version).toBe(packageJson.version);
+  expect(manifest.version).toBe('0.2.2');
+});
+
 test(`navigate with extension`, async ({ startExtensionClient, server }) => {
   const { browserContext, client } = await startExtensionClient();
 
