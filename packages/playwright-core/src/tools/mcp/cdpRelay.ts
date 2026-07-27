@@ -83,7 +83,11 @@ export class CDPRelayServer {
         throw new Error('Extension not connected');
       return this._extensionConnection.send(method as keyof ExtensionCommandV2, params);
     };
-    this._handler = new ExtensionProtocolV2(sendCommand);
+    // A token-bypass (background agent) connection must never steal focus,
+    // including for tabs it creates later (browser_tabs "new",
+    // context.newPage(), popups). See BrowserModel.createTarget.
+    const isBackgroundConnection = !!process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+    this._handler = new ExtensionProtocolV2(sendCommand, isBackgroundConnection);
 
     const uuid = crypto.randomUUID();
     this._cdpPath = `/cdp/${uuid}`;

@@ -35,7 +35,7 @@
 
 import { logUnhandledError } from './log';
 
-import type { DebuggerSession, Debuggee, Tab } from './protocol';
+import type { DebuggerSession, Debuggee, Tab, TabCreateProperties } from './protocol';
 
 export type CDPMessage = {
   id?: number;
@@ -70,9 +70,15 @@ export class BrowserModel {
   private _tabSessions = new Map<number, TabSession>();
   private _autoAttach = false;
   private _nextSessionId = 1;
+  // True for a token-bypass (background agent) connection. Tabs this model
+  // creates must not steal focus in that case, matching the policy already
+  // applied to the initial connect.html tab (see extension/src/focusGuard.ts)
+  // and to `_connectTab`'s `userSelected` gate in extension/src/background.ts.
+  private _isBackgroundConnection: boolean;
 
-  constructor(sendToExtension: SendCommand) {
+  constructor(sendToExtension: SendCommand, isBackgroundConnection: boolean = false) {
     this._sendToExtension = sendToExtension;
+    this._isBackgroundConnection = isBackgroundConnection;
   }
 
   // Wires the model's CDP output sink. Called by the handler once the
@@ -139,7 +145,14 @@ export class BrowserModel {
   }
 
   async createTarget(url: string | undefined): Promise<{ targetId: string | undefined }> {
-    const tab = await this._sendToExtension('chrome.tabs.create', [{ url }]);
+    // Chrome defaults `active` to true, which would steal focus for any
+    // context.newPage() / browser_tabs "new" / popup during a background
+    // connection. An interactive (user-selected) connection keeps today's
+    // behavior of switching to the new tab.
+    const createProperties: TabCreateProperties = { url };
+    if (this._isBackgroundConnection)
+      createProperties.active = false;
+    const tab = await this._sendToExtension('chrome.tabs.create', [createProperties]);
     if (tab?.id === undefined)
       throw new Error('Failed to create tab');
     this._knownTabs.set(tab.id, tab);

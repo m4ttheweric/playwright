@@ -130,6 +130,21 @@ test('disconnecting one client keeps the other alive', async ({ browserWithExten
   expect(response.isError ?? false).toBe(false);
 });
 
+// `document.hasFocus()` is not a reliable signal on its own: Chromium reports
+// it true for a CDP-debugger-attached page even when that page's tab is not
+// chrome's own active tab (verified against this exact harness). The
+// authoritative signal for "did this connection steal the user's tab" is
+// chrome's own active-tab bookkeeping, queried through the service worker the
+// same way the extension itself would.
+async function activeTabUrl(browserContext: BrowserContext): Promise<string | undefined> {
+  const [sw] = browserContext.serviceWorkers();
+  return sw.evaluate(async () => {
+    const chrome = (globalThis as any).chrome;
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return tab?.url;
+  });
+}
+
 test('token-bypass clients do not steal focus and can reconnect independently', async ({
   browserWithExtension,
   startClient,
@@ -160,15 +175,59 @@ test('token-bypass clients do not steal focus and can reconnect independently', 
   };
 
   const clientA = await connect('claude');
+  expect(await activeTabUrl(browserContext)).toContain('/keeper');
   const clientB = await connect('codex');
+  expect(await activeTabUrl(browserContext)).toContain('/keeper');
   expect(await keeper.evaluate(() => document.hasFocus())).toBe(true);
   await clientA.close();
   await connect('claude-reconnected');
+  expect(await activeTabUrl(browserContext)).toContain('/keeper');
   expect(await keeper.evaluate(() => document.hasFocus())).toBe(true);
   expect((await clientB.callTool({
     name: 'browser_navigate',
     arguments: { url: server.PREFIX + '/codex-still-alive' },
   })).isError ?? false).toBe(false);
+});
+
+test('token-bypass browser_tabs new does not steal focus', async ({
+  browserWithExtension,
+  startClient,
+  server,
+}) => {
+  const browserContext = await browserWithExtension.launch();
+  const keeper = await browserContext.newPage();
+  await keeper.goto(server.PREFIX + '/keeper');
+  await keeper.bringToFront();
+
+  const statusPage = await browserContext.newPage();
+  await statusPage.goto(`chrome-extension://${extensionId}/status.html`);
+  const token = await statusPage.locator('.auth-token-code').textContent();
+  await statusPage.close();
+
+  const { client } = await startClient({
+    args: ['--extension', `--extension-id=${extensionId}`],
+    clientName: 'codex',
+    roots: [{ name: 'workspace', uri: 'file:///tmp/codex' }],
+    env: {
+      PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+      PLAYWRIGHT_MCP_EXTENSION_TOKEN: token!,
+    },
+  });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/codex' } });
+
+  // Reclaim the active tab (the initial connect still steals it once; that
+  // part of the flow is covered above) so this test isolates the
+  // `browser_tabs new` / createTarget path.
+  await keeper.bringToFront();
+  expect(await activeTabUrl(browserContext)).toContain('/keeper');
+
+  const response = await client.callTool({
+    name: 'browser_tabs',
+    arguments: { action: 'new', url: server.PREFIX + '/background-new-tab' },
+  });
+  expect(response.isError ?? false).toBe(false);
+
+  expect(await activeTabUrl(browserContext)).toContain('/keeper');
 });
 
 test('tab group label uses the client workspace folder name', async ({ browserWithExtension, startClient, server }) => {
