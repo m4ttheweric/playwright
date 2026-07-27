@@ -306,8 +306,57 @@ test('browser_network_request response-body part saves binary to a file', async 
     name: 'browser_network_request',
     arguments: { index: Number(match![1]), part: 'response-body' },
   }));
-  const bodyPath = path.resolve(test.info().outputPath(), detail!.result!.trim());
+  // No filename was suggested (auto-generated name), so this goes through
+  // the same `- [Response body](...)` link format as its sibling parts
+  // (request, request-headers, request-body, response-headers), with a
+  // workspace-relative path.
+  const linkMatch = detail!.result!.match(/^- \[Response body\]\((.+)\)$/);
+  expect(linkMatch).not.toBeNull();
+  const bodyPath = path.resolve(test.info().outputPath(), linkMatch![1]);
   expect(fs.readFileSync(bodyPath)).toEqual(pngBytes);
+});
+
+test('browser_network_request response-body part reports resolved absolute path for a binary body with a caller-supplied filename', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('session-output');
+  const { client } = await startClient({ config: { outputDir } });
+
+  const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  server.setContent('/', `
+    <button onclick="fetch('/image.png')">Click me</button>
+  `, 'text/html');
+  server.setRoute('/image.png', (_req, res) => {
+    res.setHeader('Content-Type', 'image/png');
+    res.end(pngBytes);
+  });
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  await client.callTool({
+    name: 'browser_click',
+    arguments: { element: 'Click me button', target: 'e2' },
+  });
+
+  const list = parseResponse(await client.callTool({
+    name: 'browser_network_requests',
+    arguments: { static: true },
+  }));
+  const match = list!.result!.match(/^(\d+)\. \[GET\] [^ ]+\/image\.png =>/m);
+  expect(match).not.toBeNull();
+
+  const result = await client.callTool({
+    name: 'browser_network_request',
+    arguments: { index: Number(match![1]), part: 'response-body', filename: 'image-body.png' },
+  });
+
+  const expectedPath = path.join(outputDir, 'image-body.png');
+  // The caller supplied a filename, so this binary (non-textual) branch must
+  // report the resolved absolute path, exactly like its textual sibling and
+  // every other filename-accepting tool, not a workspace-relative string.
+  expect(result.content[0].text).toContain(`[Response body](${expectedPath})`);
+  expect(fs.readFileSync(expectedPath)).toEqual(pngBytes);
 });
 
 test('browser_network_request rejects out-of-range index', async ({ client, server }) => {

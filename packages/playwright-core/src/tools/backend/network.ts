@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-import fs from 'fs';
-
 import * as z from 'zod';
 
 import { getExtensionForMimeType, isTextualMimeType } from '@isomorphic/mimeType';
@@ -235,31 +233,32 @@ async function renderRequestPart(request: playwright.Request, part: RequestPart,
     await response.addResult('Response body', text, { prefix: 'response', ext: 'txt', suggestedFilename });
     return;
   }
-  const path = await saveResponseBody(request, response, suggestedFilename);
-  if (path !== undefined)
-    response.addTextResult(path);
+  await saveResponseBody(request, response, suggestedFilename);
 }
 
 function renderHeaders(headers: Record<string, string>): string {
   return Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n');
 }
 
-async function saveResponseBody(request: playwright.Request, response: ToolResponse, suggestedFilename?: string): Promise<string | undefined> {
+async function saveResponseBody(request: playwright.Request, response: ToolResponse, suggestedFilename?: string): Promise<void> {
   const httpResponse = request.existingResponse();
   if (!canHaveResponseBody(httpResponse))
-    return undefined;
+    return;
   let body: Buffer;
   try {
     body = await httpResponse.body();
   } catch {
-    return undefined;
+    return;
   }
   if (!body.length)
-    return undefined;
+    return;
   const ext = getExtensionForMimeType(httpResponse.headers()['content-type']);
-  const resolved = await response.resolveClientFile({ prefix: 'response', ext, suggestedFilename }, 'Response body');
-  await fs.promises.writeFile(resolved.fileName, body);
-  return resolved.relativeName;
+  // Route through the same addFileResult/printableLink path as every sibling
+  // branch (request, request-headers, request-body, response-headers, and the
+  // textual response-body branch above), so a caller-supplied filename here
+  // reports the resolved absolute path exactly like they do.
+  const resolvedFile = await response.resolveClientFile({ prefix: 'response', ext, suggestedFilename }, 'Response body');
+  await response.addFileResult(resolvedFile, body);
 }
 
 const networkStateSet = defineTool({
