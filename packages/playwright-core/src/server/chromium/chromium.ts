@@ -87,7 +87,7 @@ export class Chromium extends BrowserType {
     return await this._connectOverCDPInternal(progress, params.endpointURL!, params);
   }
 
-  async _connectOverCDPInternal(progress: Progress, endpointURL: string, options: types.LaunchOptions & { headers?: types.HeadersArray, isLocal?: boolean, noDefaults?: boolean, artifactsDir?: string }, onClose?: () => Promise<void>) {
+  async _connectOverCDPInternal(progress: Progress, endpointURL: string, options: types.LaunchOptions & { headers?: types.HeadersArray, isLocal?: boolean, noDefaults?: boolean, artifactsDir?: string, recordVideo?: types.BrowserContextOptions['recordVideo'] }, onClose?: () => Promise<void>) {
     let headersMap: { [key: string]: string; } | undefined;
     if (options.headers)
       headersMap = headersArrayToObject(options.headers, false);
@@ -115,7 +115,7 @@ export class Chromium extends BrowserType {
     return this._connectOverCDPImpl(progress, chromeTransport, closeAndWait, options, onClose);
   }
 
-  private async _connectOverCDPImpl(progress: Progress, transport: ConnectionTransport, closeAndWait: () => Promise<void>, options: types.LaunchOptions & { isLocal?: boolean, noDefaults?: boolean, artifactsDir?: string }, onClose?: () => Promise<void>) {
+  private async _connectOverCDPImpl(progress: Progress, transport: ConnectionTransport, closeAndWait: () => Promise<void>, options: types.LaunchOptions & { isLocal?: boolean, noDefaults?: boolean, artifactsDir?: string, recordVideo?: types.BrowserContextOptions['recordVideo'] }, onClose?: () => Promise<void>) {
     let artifactsDir: string;
     const tempDirectories: string[] = [];
     if (options.artifactsDir) {
@@ -141,6 +141,10 @@ export class Chromium extends BrowserType {
       const persistent: types.BrowserContextOptions = {
         noDefaultViewport: true,
         ...(options.noDefaults ? { acceptDownloads: 'internal-browser-default' as const } : {}),
+        // Attached pages flow through the same CRPage initialization as
+        // launched ones, so carrying recordVideo on the default context is
+        // enough to engage the automatic screencast recorder for them.
+        ...(options.recordVideo ? { recordVideo: options.recordVideo } : {}),
       };
       const browserOptions: BrowserOptions = {
         slowMo: options.slowMo,

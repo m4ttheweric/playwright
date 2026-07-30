@@ -25098,6 +25098,35 @@ export interface ConnectOverCDPOptions {
   noDefaults?: boolean;
 
   /**
+   * Enables video recording for all pages of the attached default context into the `recordVideo.dir` directory. If not
+   * specified videos are not recorded. Chromium-only. Make sure the pages or the connection are closed for videos to be
+   * saved.
+   */
+  recordVideo?: {
+    /**
+     * Path to the directory to put videos into. If not specified, the videos will be stored in `artifactsDir`.
+     */
+    dir?: string;
+
+    /**
+     * Optional dimensions of the recorded videos. If not specified the size will be equal to `viewport` scaled down to
+     * fit into 800x800. If `viewport` is not configured explicitly the video size defaults to 800x450. Actual picture of
+     * each page will be scaled down if necessary to fit the specified size.
+     */
+    size?: {
+      /**
+       * Video frame width.
+       */
+      width: number;
+
+      /**
+       * Video frame height.
+       */
+      height: number;
+    };
+  };
+
+  /**
    * Slows down Playwright operations by the specified amount of milliseconds. Useful so that you can see what is going
    * on. Defaults to 0.
    */

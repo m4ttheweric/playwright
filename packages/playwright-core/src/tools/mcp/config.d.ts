@@ -147,6 +147,13 @@ export type Config = {
   saveSession?: boolean;
 
   /**
+   * Record a video of each page into the `videos` subdirectory of the output
+   * directory, at the given size. Only applies to browsers this server
+   * launches itself; attached browsers (extension relay, cdp) are not recorded.
+   */
+  saveVideo?: { width: number, height: number };
+
+  /**
    * Reuse the same browser context between all connected HTTP clients.
    */
   sharedBrowserContext?: boolean;

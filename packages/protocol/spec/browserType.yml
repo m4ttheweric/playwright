@@ -51,6 +51,15 @@ BrowserType:
         isLocal: boolean?
         noDefaults: boolean?
         artifactsDir: string?
+        recordVideo:
+          type: object?
+          properties:
+            dir: string?
+            size:
+              type: object?
+              properties:
+                width: int
+                height: int
         transport: binary?
       returns:
         browser: Browser

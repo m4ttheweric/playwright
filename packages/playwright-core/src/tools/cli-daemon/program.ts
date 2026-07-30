@@ -24,7 +24,7 @@ import { getAsBooleanFromENV, guessClientName } from '@utils/env';
 import { gracefullyProcessExitDoNotHang } from '@utils/processLauncher';
 import { startCliDaemonServer } from './daemon';
 import { setupExitWatchdog } from '../mcp/watchdog';
-import { createBrowserWithInfo } from '../mcp/browserFactory';
+import { createBrowserWithInfo, videoRecordingOptions } from '../mcp/browserFactory';
 import * as configUtils from '../mcp/config';
 import { createClientInfo } from '../cli-client/registry';
 import { installSkills } from '../utils/installSkills';
@@ -64,7 +64,7 @@ export function decorateProgram(program: Command) {
           const { browser, browserInfo, canBind, ownership } = await createBrowserWithInfo(mcpConfig, mcpClientInfo, options);
           if (canBind)
             await browser.bind(sessionName, { workspaceDir: clientInfo.workspaceDir });
-          const browserContext = mcpConfig.browser.isolated ? await browser.newContext(mcpConfig.browser.contextOptions) : browser.contexts()[0];
+          const browserContext = mcpConfig.browser.isolated ? await browser.newContext({ ...mcpConfig.browser.contextOptions, ...videoRecordingOptions(mcpConfig, mcpClientInfo) }) : browser.contexts()[0];
           if (!browserContext)
             throw new Error('Error: unable to connect to a browser that does not have any contexts');
           const persistent = options.persistent || options.profile || mcpConfig.browser.userDataDir ? true : undefined;

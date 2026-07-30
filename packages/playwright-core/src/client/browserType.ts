@@ -169,6 +169,7 @@ export class BrowserType extends ChannelOwner<channels.BrowserTypeChannel> imple
       isLocal: params.isLocal,
       noDefaults: params.noDefaults,
       artifactsDir: params.artifactsDir,
+      recordVideo: params.recordVideo,
     }, new TimeoutSettings().timeout(params));
     return await this._browserFromConnectResult(result);
   }

@@ -68,6 +68,7 @@ export type CLIOptions = {
   proxyServer?: string;
   remoteHeader?: Record<string, string>;
   saveSession?: boolean;
+  saveVideo?: ViewportSize;
   secrets?: Record<string, string>;
   sharedBrowserContext?: boolean;
   snapshotMode?: 'full' | 'none';
@@ -372,6 +373,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
     allowUnrestrictedFileAccess: cliOptions.allowUnrestrictedFileAccess,
     codegen: cliOptions.codegen,
     saveSession: cliOptions.saveSession,
+    saveVideo: cliOptions.saveVideo,
     secrets: cliOptions.secrets,
     sharedBrowserContext: cliOptions.sharedBrowserContext,
     snapshot: cliOptions.snapshotMode ? { mode: cliOptions.snapshotMode } : undefined,

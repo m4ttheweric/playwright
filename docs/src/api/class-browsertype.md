@@ -246,6 +246,21 @@ browser where these overrides would interfere with existing browser state. New c
 
 If specified, browser artifacts (such as traces and downloads) are saved into this directory.
 
+### option: BrowserType.connectOverCDP.recordVideo
+* since: v1.61
+* langs: js
+- `recordVideo` <[Object]>
+  - `dir` ?<[path]> Path to the directory to put videos into. If not specified, the videos will be stored in `artifactsDir`.
+  - `size` ?<[Object]> Optional dimensions of the recorded videos. If not specified the size will be equal to `viewport`
+    scaled down to fit into 800x800. If `viewport` is not configured explicitly the video size defaults to 800x450.
+    Actual picture of each page will be scaled down if necessary to fit the specified size.
+    - `width` <[int]> Video frame width.
+    - `height` <[int]> Video frame height.
+
+Enables video recording for all pages of the attached default context into the `recordVideo.dir` directory. If not
+specified videos are not recorded. Chromium-only. Make sure the pages or the connection are closed for videos to be
+saved.
+
 
 ## method: BrowserType.executablePath
 * since: v1.8

@@ -18,7 +18,7 @@ import { Option as ProgramOption } from 'commander';
 import * as mcpServer from '../utils/mcp/server';
 import { commaSeparatedList, dotenvFileLoader, enumParser, headerParser, numberParser, resolutionParser, resolveCLIConfigForMCP, semicolonSeparatedList } from './config';
 import { setupExitWatchdog } from './watchdog';
-import { createBrowserWithInfo } from './browserFactory';
+import { createBrowserWithInfo, videoRecordingOptions } from './browserFactory';
 import { BrowserBackend } from '../backend/browserBackend';
 import { filteredTools } from '../backend/tools';
 import { testDebug } from './log';
@@ -66,6 +66,7 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
       .addOption(new ProgramOption('--remote-header <headers...>', 'headers to send with the remote endpoint connect request, multiple can be specified.').argParser(headerParser).hideHelp())
       .option('--sandbox', 'enable the sandbox for all process types that are normally not sandboxed.')
       .option('--save-session', 'Whether to save the Playwright MCP session into the output directory.')
+      .option('--save-video <size>', 'record a video of each page into the "videos" subdirectory of the output directory, specify size as "800x600". Only applies to browsers launched by this server.', resolutionParser.bind(null, '--save-video'))
       .option('--secrets <path>', 'path to a file containing secrets in the dotenv format', dotenvFileLoader)
       .option('--shared-browser-context', 'reuse the same browser context between all connected HTTP clients.')
       .option('--snapshot-mode <mode>', 'when taking snapshots for responses, specifies the mode to use. Can be "full" or "none". Default is "full".')
@@ -127,7 +128,7 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
               const sessionName = count > 1 ? `${clientInfo.clientName} (${count})` : clientInfo.clientName;
               await browser.bind(sessionName, { workspaceDir: clientInfo.cwd });
             }
-            const browserContext = config.browser.isolated ? await browser.newContext(config.browser.contextOptions) : browser.contexts()[0];
+            const browserContext = config.browser.isolated ? await browser.newContext({ ...config.browser.contextOptions, ...videoRecordingOptions(config, clientInfo) }) : browser.contexts()[0];
             return new BrowserBackend(config, browserContext, tools);
           },
           disposed: async backend => {

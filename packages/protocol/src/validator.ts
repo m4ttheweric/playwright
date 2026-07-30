@@ -1097,6 +1097,13 @@ scheme.BrowserTypeConnectOverCDPParams = tObject({
   isLocal: tOptional(tBoolean),
   noDefaults: tOptional(tBoolean),
   artifactsDir: tOptional(tString),
+  recordVideo: tOptional(tObject({
+    dir: tOptional(tString),
+    size: tOptional(tObject({
+      width: tInt,
+      height: tInt,
+    })),
+  })),
   transport: tOptional(tBinary),
 });
 scheme.BrowserTypeConnectOverCDPResult = tObject({

@@ -2014,6 +2014,13 @@ export type BrowserTypeConnectOverCDPParams = {
   isLocal?: boolean,
   noDefaults?: boolean,
   artifactsDir?: string,
+  recordVideo?: {
+    dir?: string,
+    size?: {
+      width: number,
+      height: number,
+    },
+  },
   transport?: Binary,
 };
 export type BrowserTypeConnectOverCDPOptions = {
@@ -2023,6 +2030,13 @@ export type BrowserTypeConnectOverCDPOptions = {
   isLocal?: boolean,
   noDefaults?: boolean,
   artifactsDir?: string,
+  recordVideo?: {
+    dir?: string,
+    size?: {
+      width: number,
+      height: number,
+    },
+  },
   transport?: Binary,
 };
 export type BrowserTypeConnectOverCDPResult = {

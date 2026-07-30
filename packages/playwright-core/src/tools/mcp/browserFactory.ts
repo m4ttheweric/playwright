@@ -68,6 +68,7 @@ export async function createBrowserWithInfo(config: FullConfig, clientInfo: Clie
         clientInfo.cwd,
         config.extensionId ?? playwrightExtensionId,
         config.extensionId ? undefined : playwrightExtensionInstallUrl,
+        videoRecordingOptions(config, clientInfo).recordVideo,
     );
     ownership = 'attached';
   } else {
@@ -82,6 +83,17 @@ export async function createBrowserWithInfo(config: FullConfig, clientInfo: Clie
 export interface BrowserContextFactory {
   contexts(clientInfo: ClientInfo): Promise<playwrightTypes.BrowserContext[]>;
   createContext(clientInfo: ClientInfo): Promise<playwrightTypes.BrowserContext>;
+}
+
+// --save-video covers contexts this server launches itself (persistent
+// launch, isolated newContext) and, in extension mode, the relay-attached
+// default context, which carries recordVideo through connectOverCDP. An
+// explicit contextOptions.recordVideo keeps precedence over the shorthand.
+export function videoRecordingOptions(config: FullConfig, clientInfo: ClientInfo): Pick<playwrightTypes.BrowserContextOptions, 'recordVideo'> {
+  if (!config.saveVideo || config.browser.contextOptions.recordVideo)
+    return {};
+  const dir = path.resolve(outputDir({ config, cwd: clientInfo.cwd }), 'videos');
+  return { recordVideo: { dir, size: config.saveVideo } };
 }
 
 function browserInfo(browser: playwrightTypes.Browser, config: FullConfig): BrowserInfo {
@@ -177,6 +189,7 @@ async function createPersistentBrowser(config: FullConfig, clientInfo: ClientInf
     tracesDir,
     ...config.browser.launchOptions,
     ...config.browser.contextOptions,
+    ...videoRecordingOptions(config, clientInfo),
     handleSIGINT: false,
     handleSIGTERM: false,
     ignoreDefaultArgs: configIgnoreDefaultArgs === true
