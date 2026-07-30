@@ -148,8 +148,9 @@ export type Config = {
 
   /**
    * Record a video of each page into the `videos` subdirectory of the output
-   * directory, at the given size. Only applies to browsers this server
-   * launches itself; attached browsers (extension relay, cdp) are not recorded.
+   * directory, at the given size. Applies to browsers this server launches
+   * itself and to contexts it attaches through the extension relay or an
+   * isolated cdp connection; the cli daemon does not record.
    */
   saveVideo?: { width: number, height: number };
 
