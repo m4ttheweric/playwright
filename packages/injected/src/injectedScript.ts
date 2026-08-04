@@ -27,7 +27,7 @@ import { kLayoutSelectorNames, layoutSelectorScore } from './layoutSelectorUtils
 import { createRoleEngine } from './roleSelectorEngine';
 import { beginAriaCaches, endAriaCaches, getAriaDisabled, getAriaRole, getCheckedAllowMixed, getCheckedWithoutMixed, getElementAccessibleDescription, getElementAccessibleErrorMessage, getElementAccessibleNameText, getReadonly } from './roleUtils';
 import { SelectorEvaluatorImpl, sortInDOMOrder } from './selectorEvaluator';
-import { generateSelector } from './selectorGenerator';
+import { generateSelector, retargetForSelectorGeneration } from './selectorGenerator';
 import { elementMatchesText, elementText, getElementLabels } from './selectorUtils';
 import { XPathEngine } from './xpathSelectorEngine';
 import { ConsoleAPI } from './consoleApi';
@@ -289,10 +289,15 @@ export class InjectedScript {
     // internally, and the accessibility lookups below then read those memoized values.
     beginAriaCaches();
     try {
-      const { selectors } = generateSelector(this, targetElement, { testIdAttributeName: this._testIdAttributeNameForStrictErrorAndConsoleCodegen, multiple: true });
-      const role = getAriaRole(targetElement) ?? undefined;
-      const name = getElementAccessibleNameText(targetElement, false) || undefined;
-      const description = getElementAccessibleDescription(targetElement, false) || name;
+      // generateSelector retargets to the closest interactive ancestor before generating candidates, so
+      // a <span> inside a <button> yields candidates that address the button. Retarget up front (the
+      // operation is idempotent, and generateSelector then repeats it to no effect) so the role, name
+      // and description below describe the same element the candidates resolve to.
+      const element = retargetForSelectorGeneration(targetElement);
+      const { selectors } = generateSelector(this, element, { testIdAttributeName: this._testIdAttributeNameForStrictErrorAndConsoleCodegen, multiple: true });
+      const role = getAriaRole(element) ?? undefined;
+      const name = getElementAccessibleNameText(element, false) || undefined;
+      const description = getElementAccessibleDescription(element, false) || name;
       return { candidates: selectors, role, name, description };
     } finally {
       endAriaCaches();

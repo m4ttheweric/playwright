@@ -75,6 +75,20 @@ export type GenerateSelectorOptions = {
   multiple?: boolean;
 };
 
+// The element a generated selector will actually address: for anything that is not itself an input,
+// selector generation prefers the closest interactive ancestor. Idempotent, so callers that need to
+// describe the addressed element (role, accessible name, ...) can apply this first and still hand the
+// result to generateSelector unchanged.
+// Note: this matches InjectedScript.retarget().
+export function retargetForSelectorGeneration(targetElement: Element, root?: Element | Document): Element {
+  if (targetElement.matches('input,textarea,select') || (targetElement as any).isContentEditable)
+    return targetElement;
+  const interactiveParent = closestCrossShadow(targetElement, 'button,select,input,[role=button],[role=checkbox],[role=radio],a,[role=link]', root);
+  if (interactiveParent && isElementVisible(interactiveParent))
+    return interactiveParent;
+  return targetElement;
+}
+
 export function generateSelector(injectedScript: InjectedScript, targetElement: Element, options: GenerateSelectorOptions): { selector: string, selectors: string[], elements: Element[] } {
   injectedScript._evaluator.begin();
   const cache: Cache = { allowText: new Map(), disallowText: new Map() };
@@ -96,12 +110,7 @@ export function generateSelector(injectedScript: InjectedScript, targetElement: 
       }
       selectors = [joinTokens(targetTokens)];
     } else {
-      // Note: this matches InjectedScript.retarget().
-      if (!targetElement.matches('input,textarea,select') && !(targetElement as any).isContentEditable) {
-        const interactiveParent = closestCrossShadow(targetElement, 'button,select,input,[role=button],[role=checkbox],[role=radio],a,[role=link]', options.root);
-        if (interactiveParent && isElementVisible(interactiveParent))
-          targetElement = interactiveParent;
-      }
+      targetElement = retargetForSelectorGeneration(targetElement, options.root);
       if (options.multiple) {
         const withText = generateSelectorFor(cache, injectedScript, targetElement, options);
         const withoutText = generateSelectorFor(cache, injectedScript, targetElement, { ...options, noText: true });
