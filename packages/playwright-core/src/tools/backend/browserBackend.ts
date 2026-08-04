@@ -85,6 +85,10 @@ export class BrowserBackend implements ServerBackend {
     const context = this._context!;
     const response = new Response(context, name, parsedArguments, { relativeTo: cwd, raw, json });
     context.setRunningTool(name);
+    const traceLog = this._traceLog;
+    const startedAt = new Date().toISOString();
+    const urlBefore = context.currentTab()?.page.url();
+    let traceError: string | undefined;
     let responseObject: mcpServer.CallToolResult & { isClose?: boolean };
     try {
       await tool.handle(context, parsedArguments, response, signal);
@@ -94,14 +98,36 @@ export class BrowserBackend implements ServerBackend {
       this._sessionLog?.logResponse(name, parsedArguments, responseObject);
     } catch (error: any) {
       const messages = [String(error), ...context.drainPendingUnhandledRejections().map(formatRejectionReason)];
-      responseObject = formatError(messages.join('\n\n'));
+      traceError = messages.join('\n\n');
+      responseObject = formatError(traceError);
     } finally {
       context.setRunningTool(undefined);
+      traceLog?.appendRecord({
+        v: 1,
+        seq: traceLog.nextSeq(),
+        tool: name,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        params: parsedArguments,
+        urlBefore,
+        urlAfter: context.currentTab()?.page.url(),
+        targets: [],
+        network: [],
+        mutating: false,
+        waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
+        code: response.code(),
+        error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
+      });
     }
     if (this._disconnected)
       responseObject.isClose = true;
     return responseObject;
   }
+}
+
+function extractErrorText(responseObject: mcpServer.CallToolResult): string | undefined {
+  const content = responseObject.content[0];
+  return content?.type === 'text' ? content.text : undefined;
 }
 
 function formatRejectionReason(reason: unknown): string {

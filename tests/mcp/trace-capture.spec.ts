@@ -37,3 +37,30 @@ test('no trace dir without --save-trace', async ({ startClient, server }, testIn
   await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
   expect(fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))).toBeFalsy();
 });
+
+test('each tool call appends one TraceRecord with tool, params, urls, code', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/btn.html', `<button onclick="this.textContent='clicked'">Go</button>`, 'text/html');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/btn.html' } });
+  await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  expect(lines.length).toBe(2);
+  expect(lines[0]).toMatchObject({ v: 1, seq: 1, tool: 'browser_navigate' });
+  expect(lines[0].params).toMatchObject({ url: server.PREFIX + '/btn.html' });
+  expect(lines[0].urlAfter).toBe(server.PREFIX + '/btn.html');
+  expect(lines[0].endedAt >= lines[0].startedAt).toBe(true);
+  expect(lines[1]).toMatchObject({ seq: 2, tool: 'browser_snapshot' });
+});
+
+test('tool errors are recorded with error field', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  await client.callTool({ name: 'browser_click', arguments: { element: 'nope', target: 'e999' } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  expect(lines[1].tool).toBe('browser_click');
+  expect(typeof lines[1].error).toBe('string');
+});

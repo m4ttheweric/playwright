@@ -147,6 +147,10 @@ export class Response {
     this._code.push(code);
   }
 
+  code(): string[] {
+    return this._code;
+  }
+
   setIncludeSnapshot() {
     this._includeSnapshot = this._context.config.snapshot?.mode ?? 'full';
   }
