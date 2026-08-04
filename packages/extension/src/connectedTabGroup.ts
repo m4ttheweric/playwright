@@ -158,6 +158,28 @@ export class ConnectedTabGroup {
   // and a subsequent navigation will re-attach via _onTabUpdated.
   private _onTabDetached(tabId: number): void {
     void this._updateBadge(tabId, { text: '' });
+    void this._reattachSurvivors();
+  }
+
+  // Runs after any detach. When Chrome detaches the debugger on its own the
+  // tab usually survives -- a Memory Saver discard keeps it in the strip and
+  // in this group, just under a new tab id -- so the group, not the stale id,
+  // is what we re-attach from. Re-attaching cancels the pending close in
+  // RelayConnection; finding nothing lets that close go ahead.
+  private async _reattachSurvivors(): Promise<void> {
+    if (this._groupId === null || this._connection.attachedTabs.size > 0)
+      return;
+    try {
+      const tabs = await chrome.tabs.query({ groupId: this._groupId });
+      for (const tab of tabs) {
+        if (tab.id === undefined || isNonDebuggableUrl(tab.url) || isOwnUiUrl(tab.url))
+          continue;
+        this._groupTabIds.add(tab.id);
+        this._connection.attachTab(tab);
+      }
+    } catch (error: any) {
+      debugLog('Error re-attaching after an involuntary detach:', error);
+    }
   }
 
   private _onConnectionClose(): void {

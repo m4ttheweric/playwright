@@ -55,6 +55,12 @@ const ALLOWED_CHROME_COMMANDS = new Set([
   'chrome.tabs.remove',
 ]);
 
+// How long an involuntary detach of the last attached tab waits for a
+// successor to be re-attached before the connection is closed. Long enough to
+// cover the attach round-trip through the relay, short enough that a session
+// that really is over ends promptly.
+const kReattachGraceMs = 1000;
+
 // chrome.* events the extension forwards to the relay (positional params).
 const CHROME_EVENT_METHODS = [
   'chrome.debugger.onEvent',
@@ -167,9 +173,27 @@ export class RelayConnection {
     this.onclose?.();
   }
 
+  // The user pulled the last tab out of the group, so the session is over by
+  // request. Close immediately.
   private _checkLastTabDetached(): void {
     if (this._hasEverAttached && this._attachedTabs.size === 0)
       this.close('All controlled tabs detached');
+  }
+
+  // Chrome detached the debugger on its own -- the tab was discarded under
+  // Memory Saver, the target was replaced, the renderer went away. That is not
+  // a request to end the session, and treating it as one loses every tab the
+  // client had open. Give ConnectedTabGroup a beat to re-attach whatever is
+  // still in the group (a discarded tab comes back under a *new* tab id) and
+  // only tear the connection down if nothing is left to drive.
+  private _checkLastTabDetachedAfterGrace(): void {
+    if (this._closed || !this._hasEverAttached || this._attachedTabs.size > 0)
+      return;
+    setTimeout(() => {
+      if (this._closed || this._attachedTabs.size > 0)
+        return;
+      this.close('All controlled tabs detached');
+    }, kReattachGraceMs);
   }
 
   // Forwards chrome.* events concerning attached tabs to the relay, then runs
@@ -182,7 +206,7 @@ export class RelayConnection {
     // chrome.debugger.onDetach is the single source of truth for detach bookkeeping.
     if (fullMethod === 'chrome.debugger.onDetach') {
       this._notifyTabDetached(tabId);
-      this._checkLastTabDetached();
+      this._checkLastTabDetachedAfterGrace();
     }
   }
 
