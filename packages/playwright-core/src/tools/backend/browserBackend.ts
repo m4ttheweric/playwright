@@ -96,7 +96,15 @@ export class BrowserBackend implements ServerBackend {
     const startedAt = new Date().toISOString();
     const urlBefore = context.currentTab()?.page.url();
     let traceError: string | undefined;
-    let responseObject: mcpServer.CallToolResult & { isClose?: boolean };
+    // Definite initializer only: the try/catch below always overwrites this
+    // before it's read (success sets it via response.serialize(), any thrown
+    // error sets it via formatError()) on every reachable path, including
+    // the finally block's own read of responseObject.isError. Without an
+    // initializer here, tsc's control-flow analysis can't prove that (a
+    // finally block is conservatively treated as reachable even mid-catch,
+    // before catch's own assignment runs), so this placeholder exists purely
+    // to satisfy tsc — it is not expected to ever be the value actually read.
+    let responseObject: mcpServer.CallToolResult & { isClose?: boolean } = formatError('Internal error: tool call produced no response');
     try {
       await tool.handle(context, parsedArguments, response, signal);
       for (const reason of context.drainPendingUnhandledRejections())
