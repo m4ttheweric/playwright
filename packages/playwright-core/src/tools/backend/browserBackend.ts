@@ -27,6 +27,8 @@ import type { Tool } from './tool';
 import type * as mcpServer from '../utils/mcp/server';
 import type { ClientInfo, ServerBackend } from '../utils/mcp/server';
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 export class BrowserBackend implements ServerBackend {
   private _tools: Tool[];
   private _context: Context | undefined;
@@ -106,6 +108,8 @@ export class BrowserBackend implements ServerBackend {
       // write failure (ENOSPC, EACCES, output dir removed mid-session, ...) must
       // never override an already-computed responseObject, so swallow-and-log.
       try {
+        const telemetry = context.takeActionTelemetry();
+        const network = telemetry?.network ?? [];
         traceLog?.appendRecord({
           v: 1,
           seq: traceLog.nextSeq(),
@@ -116,9 +120,9 @@ export class BrowserBackend implements ServerBackend {
           urlBefore,
           urlAfter: context.currentTab()?.page.url(),
           targets: [],
-          network: [],
-          mutating: false,
-          waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
+          network,
+          mutating: network.some(n => !SAFE_METHODS.has(n.method.toUpperCase())),
+          waits: telemetry?.waits ?? { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
           code: response.code(),
           error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
         });

@@ -16,42 +16,67 @@
 
 import type * as playwright from '../../..';
 import type { Tab } from './tab';
+import type { TraceNetworkEntry } from './traceLog';
 
 export async function waitForCompletion<R>(tab: Tab, callback: () => Promise<R>): Promise<R> {
   const settleMs = tab.context.config.timeouts?.settle ?? 500;
   const requests: playwright.Request[] = [];
+  const network: TraceNetworkEntry[] = [];
 
-  const requestListener = (request: playwright.Request) => requests.push(request);
+  const requestListener = (request: playwright.Request) => {
+    requests.push(request);
+    const entry: TraceNetworkEntry = { method: request.method(), url: request.url(), resourceType: request.resourceType() };
+    network.push(entry);
+    request.response().then(response => {
+      if (response)
+        entry.status = response.status();
+    }).catch(() => {
+      entry.failed = true;
+    });
+  };
   const disposeListeners = () => {
     tab.page.off('request', requestListener);
   };
   tab.page.on('request', requestListener);
 
   let result: R;
+  let settleStart = 0;
   try {
     result = await callback();
+    settleStart = Date.now();
     await tab.waitForTimeout(settleMs);
   } finally {
     disposeListeners();
   }
 
   const requestedNavigation = requests.some(request => request.isNavigationRequest());
+  let awaitedRequests = 0;
   if (requestedNavigation) {
     await tab.page.mainFrame().waitForLoadState('load', { timeout: 10000 }).catch(() => {});
-    return result;
+  } else {
+    const promises: Promise<any>[] = [];
+    for (const request of requests) {
+      if (['document', 'stylesheet', 'script', 'xhr', 'fetch'].includes(request.resourceType())) {
+        awaitedRequests++;
+        promises.push(request.response().then(r => r?.finished()).catch(() => {}));
+      } else {
+        promises.push(request.response().catch(() => {}));
+      }
+    }
+    const timeout = new Promise<void>(resolve => setTimeout(resolve, 5000));
+    await Promise.race([Promise.all(promises), timeout]);
+    if (requests.length)
+      await tab.waitForTimeout(settleMs);
   }
 
-  const promises: Promise<any>[] = [];
-  for (const request of requests) {
-    if (['document', 'stylesheet', 'script', 'xhr', 'fetch'].includes(request.resourceType()))
-      promises.push(request.response().then(r => r?.finished()).catch(() => {}));
-    else
-      promises.push(request.response().catch(() => {}));
-  }
-  const timeout = new Promise<void>(resolve => setTimeout(resolve, 5000));
-  await Promise.race([Promise.all(promises), timeout]);
-  if (requests.length)
-    await tab.waitForTimeout(settleMs);
+  tab.context.setActionTelemetry({
+    network,
+    waits: {
+      settleMs: Date.now() - settleStart,
+      awaitedNavigation: requestedNavigation,
+      awaitedRequests,
+    },
+  });
 
   return result;
 }

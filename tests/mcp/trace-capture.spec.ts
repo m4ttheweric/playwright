@@ -17,7 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { test, expect } from './fixtures';
+import { test, expect, parseResponse } from './fixtures';
 
 test('--save-trace creates trace dir with meta.json and actions.jsonl', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
@@ -81,4 +81,29 @@ test('a trace-write failure does not affect the tool response', async ({ startCl
   } finally {
     await fs.promises.chmod(actionsFile, 0o644);
   }
+});
+
+test('network activity and mutation classification recorded per action', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/form.html', `
+    <button id="post" onclick="fetch('/api/submit', { method: 'POST', body: 'x=1' })">Submit</button>
+    <button id="get" onclick="fetch('/api/read')">Read</button>`, 'text/html');
+  server.setContent('/api/submit', 'ok', 'text/plain');
+  server.setContent('/api/read', 'ok', 'text/plain');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/form.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const postRef = /"Submit"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+  const getRef = /"Read"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+  await client.callTool({ name: 'browser_click', arguments: { element: 'Submit button', target: postRef } });
+  await client.callTool({ name: 'browser_click', arguments: { element: 'Read button', target: getRef } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const postClick = lines.find(l => l.tool === 'browser_click' && l.params.target === postRef);
+  const getClick = lines.find(l => l.tool === 'browser_click' && l.params.target === getRef);
+  expect(postClick.network.some((n: any) => n.method === 'POST' && n.url.includes('/api/submit'))).toBe(true);
+  expect(postClick.mutating).toBe(true);
+  expect(getClick.mutating).toBe(false);
+  expect(postClick.waits.settleMs).toBeGreaterThanOrEqual(0);
 });

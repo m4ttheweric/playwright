@@ -29,7 +29,7 @@ import { Tab } from './tab';
 
 import type * as playwrightTypes from '../../..';
 import type { SessionLog } from './sessionLog';
-import type { TraceLog } from './traceLog';
+import type { TraceLog, TraceNetworkEntry } from './traceLog';
 import type { Disposable } from '@isomorphic/disposable';
 import type { ToolCapability } from './tool';
 
@@ -93,6 +93,17 @@ export type FilenameTemplate = {
 
 type VideoParams = { size?: { width: number; height: number } };
 
+// Per-action telemetry collected while a tool's own callback runs (network
+// activity, waits). A take-once accessor: set during the action by
+// waitForCompletion, drained exactly once by the dispatch seam in
+// BrowserBackend.callTool, and cleared on take so a telemetry-less tool
+// (e.g. browser_snapshot, which never calls waitForCompletion) records empty
+// network rather than the previous action's stale data.
+export type ActionTelemetry = {
+  network: TraceNetworkEntry[];
+  waits: { settleMs: number, awaitedNavigation: boolean, awaitedRequests: number };
+};
+
 export class Context {
   readonly config: ContextConfig;
   readonly sessionLog: SessionLog | undefined;
@@ -111,6 +122,7 @@ export class Context {
   private _disposables: Disposable[] = [];
 
   private _runningToolName: string | undefined;
+  private _actionTelemetry: ActionTelemetry | undefined;
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -302,6 +314,16 @@ export class Context {
 
   setRunningTool(name: string | undefined) {
     this._runningToolName = name;
+  }
+
+  setActionTelemetry(telemetry: ActionTelemetry) {
+    this._actionTelemetry = telemetry;
+  }
+
+  takeActionTelemetry(): ActionTelemetry | undefined {
+    const telemetry = this._actionTelemetry;
+    this._actionTelemetry = undefined;
+    return telemetry;
   }
 
   private async _setupRequestInterception(context: playwrightTypes.BrowserContext) {
