@@ -87,6 +87,11 @@ export class BrowserBackend implements ServerBackend {
     const context = this._context!;
     const response = new Response(context, name, parsedArguments, { relativeTo: cwd, raw, json });
     context.setRunningTool(name);
+    // Must run before tool.handle(): establishes this dispatch's epoch so any
+    // action it starts (and any still-running background action from a prior,
+    // modal-interrupted call) is unambiguous about which call it belongs to.
+    // See the ActionTelemetry comment in context.ts for the race this guards.
+    context.beginAction();
     const traceLog = this._traceLog;
     const startedAt = new Date().toISOString();
     const urlBefore = context.currentTab()?.page.url();

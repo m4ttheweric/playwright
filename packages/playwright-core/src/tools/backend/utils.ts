@@ -20,6 +20,11 @@ import type { TraceNetworkEntry } from './traceLog';
 
 export async function waitForCompletion<R>(tab: Tab, callback: () => Promise<R>): Promise<R> {
   const settleMs = tab.context.config.timeouts?.settle ?? 500;
+  // Captured up front: if this action gets superseded (see setActionTelemetry),
+  // the telemetry write below must carry the epoch this action actually
+  // started under, not whatever the epoch happens to be once it finally
+  // finishes in the background.
+  const epoch = tab.context.currentActionEpoch();
   const requests: playwright.Request[] = [];
   const network: TraceNetworkEntry[] = [];
 
@@ -69,7 +74,7 @@ export async function waitForCompletion<R>(tab: Tab, callback: () => Promise<R>)
       await tab.waitForTimeout(settleMs);
   }
 
-  tab.context.setActionTelemetry({
+  tab.context.setActionTelemetry(epoch, {
     network,
     waits: {
       settleMs: Date.now() - settleStart,

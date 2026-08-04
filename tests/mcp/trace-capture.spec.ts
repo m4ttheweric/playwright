@@ -107,3 +107,48 @@ test('network activity and mutation classification recorded per action', async (
   expect(getClick.mutating).toBe(false);
   expect(postClick.waits.settleMs).toBeGreaterThanOrEqual(0);
 });
+
+test('a dialog-interrupted action does not leak stale telemetry onto a later trace record', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  // The handler fires a request, then opens the alert asynchronously (after
+  // the request settles). The click tool call's own waitForCompletion races
+  // against the modal-state event and loses: Tab.waitForCompletion returns
+  // early (see Tab._raceAgainstModalStates) while the click's underlying
+  // waitForCompletion() call keeps running in the background, blocked, since
+  // the alert stalls the page until it is dismissed. It can only reach
+  // setActionTelemetry once browser_handle_dialog accepts the dialog on a
+  // later, separate tool call.
+  server.setContent('/dialog.html', `
+    <button id="alertBtn" onclick="fetch('/api/before-alert').then(() => alert('Alert'))">Alert</button>`, 'text/html');
+  server.setContent('/api/before-alert', 'ok', 'text/plain');
+  // A short settle window keeps the interrupted action's backgrounded work
+  // (and this test) fast, without changing the shape of the race.
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`, '--timeout-settle=5'] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/dialog.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const alertRef = /"Alert"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+
+  const clickResult = await client.callTool({ name: 'browser_click', arguments: { element: 'Alert button', target: alertRef } });
+  // Confirms the click really was interrupted by the modal (i.e. this test
+  // actually exercises the race, not a false positive from the alert firing
+  // too late to matter).
+  expect(parseResponse(clickResult)?.modalState).toContain('dialog');
+
+  await client.callTool({ name: 'browser_handle_dialog', arguments: { accept: true } });
+  // Poll with telemetry-less calls: the interrupted click's backgrounded
+  // action can only reach setActionTelemetry once the dialog above is
+  // handled, and exactly when it does is not deterministic, so every call
+  // in this window is a candidate for inheriting its stale data.
+  for (let i = 0; i < 40; i++)
+    await client.callTool({ name: 'browser_snapshot', arguments: {} });
+
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const dialogIndex = lines.findIndex((l: any) => l.tool === 'browser_handle_dialog');
+  expect(dialogIndex).toBeGreaterThanOrEqual(0);
+  const afterDialog = lines.slice(dialogIndex + 1);
+  expect(afterDialog.length).toBeGreaterThan(0);
+  const contaminated = afterDialog.some((l: any) => l.network.some((n: any) => n.url.includes('/api/before-alert')));
+  expect(contaminated).toBe(false);
+});

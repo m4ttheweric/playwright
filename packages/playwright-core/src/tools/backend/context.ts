@@ -99,6 +99,17 @@ type VideoParams = { size?: { width: number; height: number } };
 // BrowserBackend.callTool, and cleared on take so a telemetry-less tool
 // (e.g. browser_snapshot, which never calls waitForCompletion) records empty
 // network rather than the previous action's stale data.
+//
+// Epoch-guarded because take-once alone is not enough: Tab._raceAgainstModalStates
+// races an action against a modal-state event (e.g. a dialog opened mid-click).
+// When the modal wins, Tab.waitForCompletion returns early while the action's
+// own waitForCompletion() keeps running in the background — it can only finish
+// once the dialog is handled by a *later* tool call, at which point calling
+// setActionTelemetry unconditionally would stamp the interrupted action's data
+// onto whatever call happens to be current. Each dispatched tool call owns an
+// epoch (bumped in beginAction, called before the tool runs); a telemetry write
+// tagged with a stale epoch is silently dropped instead of corrupting the next
+// trace record.
 export type ActionTelemetry = {
   network: TraceNetworkEntry[];
   waits: { settleMs: number, awaitedNavigation: boolean, awaitedRequests: number };
@@ -122,6 +133,7 @@ export class Context {
   private _disposables: Disposable[] = [];
 
   private _runningToolName: string | undefined;
+  private _actionEpoch = 0;
   private _actionTelemetry: ActionTelemetry | undefined;
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
@@ -316,7 +328,28 @@ export class Context {
     this._runningToolName = name;
   }
 
-  setActionTelemetry(telemetry: ActionTelemetry) {
+  // Marks the start of a newly dispatched tool call: bumps the action epoch
+  // and drops any telemetry still sitting from a previous call (including a
+  // stale write that lands between calls — see the ActionTelemetry comment).
+  // Must run before the tool's own handle() so any action it starts is
+  // stamped with this call's epoch, not a leftover one.
+  beginAction(): number {
+    this._actionEpoch++;
+    this._actionTelemetry = undefined;
+    return this._actionEpoch;
+  }
+
+  currentActionEpoch(): number {
+    return this._actionEpoch;
+  }
+
+  // Stores telemetry for the action tagged with `epoch`. A mismatched epoch
+  // means the action that produced this data was superseded by a later tool
+  // call (see ActionTelemetry) while it kept running in the background; the
+  // write is dropped rather than corrupting the current call's trace record.
+  setActionTelemetry(epoch: number, telemetry: ActionTelemetry) {
+    if (epoch !== this._actionEpoch)
+      return;
     this._actionTelemetry = telemetry;
   }
 
