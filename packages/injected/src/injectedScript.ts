@@ -284,6 +284,21 @@ export class InjectedScript {
     return generateSelector(this, targetElement, { ...options, testIdAttributeName: this._testIdAttributeNameForStrictErrorAndConsoleCodegen }).selector;
   }
 
+  selectorCandidates(targetElement: Element): { candidates: string[], role?: string, name?: string, description?: string } {
+    // Hold the aria caches open across both halves: generateSelector computes role/name/description
+    // internally, and the accessibility lookups below then read those memoized values.
+    beginAriaCaches();
+    try {
+      const { selectors } = generateSelector(this, targetElement, { testIdAttributeName: this._testIdAttributeNameForStrictErrorAndConsoleCodegen, multiple: true });
+      const role = getAriaRole(targetElement) ?? undefined;
+      const name = getElementAccessibleNameText(targetElement, false) || undefined;
+      const description = getElementAccessibleDescription(targetElement, false) || name;
+      return { candidates: selectors, role, name, description };
+    } finally {
+      endAriaCaches();
+    }
+  }
+
   querySelector(selector: ParsedSelector, root: Node, strict: boolean): Element | undefined {
     const result = this.querySelectorAll(selector, root);
     if (strict && result.length > 1)

@@ -275,6 +275,12 @@ export class Locator implements api.Locator {
     return new Locator(this._frame, resolvedSelector);
   }
 
+  // Internal, undocumented: several selector candidates for this locator's element, best-first,
+  // alongside its accessible role/name/description. Used to enrich fast-browser traces.
+  async _selectorCandidates(): Promise<{ candidates: string[], role?: string, name?: string, description?: string }> {
+    return await this._frame._channel.selectorCandidates({ selector: this._selector }, kNoTimeout);
+  }
+
   async getAttribute(name: string, options?: TimeoutOptions): Promise<string | null> {
     return await this._frame.getAttribute(this._selector, name, { strict: true, ...options });
   }

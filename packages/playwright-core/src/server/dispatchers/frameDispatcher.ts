@@ -187,6 +187,10 @@ export class FrameDispatcher extends Dispatcher<Frame, channels.FrameChannel, Br
     return await this._frame.resolveSelector(progress, params.selector);
   }
 
+  async selectorCandidates(params: channels.FrameSelectorCandidatesParams, progress: Progress): Promise<channels.FrameSelectorCandidatesResult> {
+    return await this._frame.selectorCandidates(progress, params.selector);
+  }
+
   async getAttribute(params: channels.FrameGetAttributeParams, progress: Progress): Promise<channels.FrameGetAttributeResult> {
     const value = await this._frame.getAttribute(progress, params.selector, params.name, params);
     return { value: value === null ? undefined : value };

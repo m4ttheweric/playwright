@@ -142,6 +142,7 @@ export const methodMetainfo = new Map<string, MethodMetainfo>([
   ['Frame.focus', { title: 'Focus', slowMo: true, snapshot: true, pause: true, }],
   ['Frame.frameElement', { title: 'Get frame element', group: 'getter', }],
   ['Frame.resolveSelector', { internal: true, }],
+  ['Frame.selectorCandidates', { internal: true, }],
   ['Frame.highlight', { internal: true, }],
   ['Frame.hideHighlight', { internal: true, }],
   ['Frame.getAttribute', { title: 'Get attribute "{name}"', snapshot: true, pause: true, group: 'getter', }],

@@ -2276,6 +2276,7 @@ export interface FrameChannel extends FrameEventTarget, Channel {
   focus(params: FrameFocusParams, progress: Progress): Promise<FrameFocusResult>;
   frameElement(params: FrameFrameElementParams, progress: Progress): Promise<FrameFrameElementResult>;
   resolveSelector(params: FrameResolveSelectorParams, progress: Progress): Promise<FrameResolveSelectorResult>;
+  selectorCandidates(params: FrameSelectorCandidatesParams, progress: Progress): Promise<FrameSelectorCandidatesResult>;
   highlight(params: FrameHighlightParams, progress: Progress): Promise<FrameHighlightResult>;
   hideHighlight(params: FrameHideHighlightParams, progress: Progress): Promise<FrameHideHighlightResult>;
   getAttribute(params: FrameGetAttributeParams, progress: Progress): Promise<FrameGetAttributeResult>;
@@ -2582,6 +2583,18 @@ export type FrameResolveSelectorOptions = {
 };
 export type FrameResolveSelectorResult = {
   resolvedSelector: string,
+};
+export type FrameSelectorCandidatesParams = {
+  selector: string,
+};
+export type FrameSelectorCandidatesOptions = {
+
+};
+export type FrameSelectorCandidatesResult = {
+  candidates: string[],
+  role?: string,
+  name?: string,
+  description?: string,
 };
 export type FrameHighlightParams = {
   selector: string,

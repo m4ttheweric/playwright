@@ -337,6 +337,18 @@ Frame:
       returns:
         resolvedSelector: string
 
+    selectorCandidates:
+      internal: true
+      parameters:
+        selector: string
+      returns:
+        candidates:
+          type: array
+          items: string
+        role: string?
+        name: string?
+        description: string?
+
     highlight:
       internal: true
       parameters:

@@ -1334,6 +1334,23 @@ export class Frame extends SdkObject<FrameEventMap> {
     return { resolvedSelector };
   }
 
+  async selectorCandidates(progress: Progress, selector: string): Promise<{ candidates: string[], role?: string, name?: string, description?: string }> {
+    const element = await progress.race(this.selectors.query(selector));
+    if (!element)
+      throw new Error(`No element matching ${selector}`);
+
+    try {
+      const result = await progress.race(element.evaluateInUtility(([injected, node]) => {
+        return injected.selectorCandidates(node as unknown as Element);
+      }, {}));
+      if (result === 'error:notconnected')
+        throw new Error(`Unable to generate locator for ${selector}`);
+      return result;
+    } finally {
+      element.dispose();
+    }
+  }
+
   async textContent(progress: Progress, selector: string, options: types.QueryOnSelectorOptions, scope?: dom.ElementHandle): Promise<string | null> {
     const { result } = await this._waitForFunctionOnSelector(progress, selector, (injected, element) => ({ result: element.textContent }), undefined, options, scope);
     return result;

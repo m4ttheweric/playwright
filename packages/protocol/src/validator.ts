@@ -1412,6 +1412,15 @@ scheme.FrameResolveSelectorParams = tObject({
 scheme.FrameResolveSelectorResult = tObject({
   resolvedSelector: tString,
 });
+scheme.FrameSelectorCandidatesParams = tObject({
+  selector: tString,
+});
+scheme.FrameSelectorCandidatesResult = tObject({
+  candidates: tArray(tString),
+  role: tOptional(tString),
+  name: tOptional(tString),
+  description: tOptional(tString),
+});
 scheme.FrameHighlightParams = tObject({
   selector: tString,
   style: tOptional(tString),
