@@ -29,6 +29,7 @@ import { Tab } from './tab';
 
 import type * as playwrightTypes from '../../..';
 import type { SessionLog } from './sessionLog';
+import type { TraceLog } from './traceLog';
 import type { Disposable } from '@isomorphic/disposable';
 import type { ToolCapability } from './tool';
 
@@ -47,6 +48,7 @@ export type ContextConfig = {
   outputDir?: string;
   outputMaxSize?: number;
   saveSession?: boolean;
+  saveTrace?: boolean;
   secrets?: Record<string, string>;
   snapshot?: {
     mode?: 'full' | 'none';
@@ -68,6 +70,7 @@ export type ContextConfig = {
 type ContextOptions = {
   config: ContextConfig;
   sessionLog?: SessionLog;
+  traceLog?: TraceLog;
   cwd: string;
 };
 
@@ -93,6 +96,7 @@ type VideoParams = { size?: { width: number; height: number } };
 export class Context {
   readonly config: ContextConfig;
   readonly sessionLog: SessionLog | undefined;
+  readonly traceLog: TraceLog | undefined;
   readonly options: ContextOptions;
   private _rawBrowserContext: playwrightTypes.BrowserContext;
   private _browserContextPromise: Promise<playwrightTypes.BrowserContext> | undefined;
@@ -118,6 +122,7 @@ export class Context {
   constructor(browserContext: playwrightTypes.BrowserContext, options: ContextOptions) {
     this.config = options.config;
     this.sessionLog = options.sessionLog;
+    this.traceLog = options.traceLog;
     this.options = options;
     this._rawBrowserContext = browserContext;
     testDebug('create context');

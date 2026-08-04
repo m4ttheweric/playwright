@@ -147,6 +147,11 @@ export type Config = {
   saveSession?: boolean;
 
   /**
+   * Record every tool call to a JSONL trace under the output directory.
+   */
+  saveTrace?: boolean;
+
+  /**
    * Record a video of each page into the `videos` subdirectory of the output
    * directory, at the given size. Applies to browsers this server launches
    * itself and to contexts it attaches through the extension relay or an

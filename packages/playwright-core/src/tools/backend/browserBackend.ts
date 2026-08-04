@@ -19,6 +19,8 @@ import debug from 'debug';
 import { Context } from './context';
 import { Response } from './response';
 import { SessionLog } from './sessionLog';
+import { TraceLog } from './traceLog';
+import { packageJSON } from '../../package';
 import type { ContextConfig } from './context';
 import type * as playwright from '../../..';
 import type { Tool } from './tool';
@@ -29,6 +31,7 @@ export class BrowserBackend implements ServerBackend {
   private _tools: Tool[];
   private _context: Context | undefined;
   private _sessionLog: SessionLog | undefined;
+  private _traceLog: TraceLog | undefined;
   private _config: ContextConfig;
   private _disconnected = false;
   readonly browserContext: playwright.BrowserContext;
@@ -44,15 +47,20 @@ export class BrowserBackend implements ServerBackend {
 
   async initialize(clientInfo: ClientInfo): Promise<void> {
     this._sessionLog = this._config.saveSession ? await SessionLog.create(this._config, clientInfo.cwd) : undefined;
+    this._traceLog = this._config.saveTrace
+      ? await TraceLog.create(this._config, clientInfo.cwd, { clientName: clientInfo.clientName, runtimeVersion: packageJSON.version })
+      : undefined;
     this._context = new Context(this.browserContext, {
       config: this._config,
       sessionLog: this._sessionLog,
+      traceLog: this._traceLog,
       cwd: clientInfo.cwd,
     });
   }
 
   async dispose() {
     await this._context?.dispose().catch(e => debug('pw:tools:error')(e));
+    await this._traceLog?.close().catch(e => debug('pw:tools:error')(e));
   }
 
   async callTool(name: string, rawArguments: mcpServer.CallToolRequest['params']['arguments'] & { _meta?: Record<string, any> } = {}, signal?: AbortSignal): Promise<mcpServer.CallToolResult & { isClose?: boolean }> {

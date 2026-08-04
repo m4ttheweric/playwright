@@ -66,6 +66,7 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
       .addOption(new ProgramOption('--remote-header <headers...>', 'headers to send with the remote endpoint connect request, multiple can be specified.').argParser(headerParser).hideHelp())
       .option('--sandbox', 'enable the sandbox for all process types that are normally not sandboxed.')
       .option('--save-session', 'Whether to save the Playwright MCP session into the output directory.')
+      .option('--save-trace', 'Record every tool call to a local JSONL trace')
       .option('--save-video <size>', 'record a video of each page into the "videos" subdirectory of the output directory, specify size as "800x600". Applies to browsers this server launches and to tabs attached through the extension relay or an isolated cdp connection; the cli daemon does not record.', resolutionParser.bind(null, '--save-video'))
       .option('--secrets <path>', 'path to a file containing secrets in the dotenv format', dotenvFileLoader)
       .option('--shared-browser-context', 'reuse the same browser context between all connected HTTP clients.')
