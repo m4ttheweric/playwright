@@ -102,22 +102,29 @@ export class BrowserBackend implements ServerBackend {
       responseObject = formatError(traceError);
     } finally {
       context.setRunningTool(undefined);
-      traceLog?.appendRecord({
-        v: 1,
-        seq: traceLog.nextSeq(),
-        tool: name,
-        startedAt,
-        endedAt: new Date().toISOString(),
-        params: parsedArguments,
-        urlBefore,
-        urlAfter: context.currentTab()?.page.url(),
-        targets: [],
-        network: [],
-        mutating: false,
-        waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
-        code: response.code(),
-        error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
-      });
+      // Tracing is a local side effect, not part of the tool-result contract: a
+      // write failure (ENOSPC, EACCES, output dir removed mid-session, ...) must
+      // never override an already-computed responseObject, so swallow-and-log.
+      try {
+        traceLog?.appendRecord({
+          v: 1,
+          seq: traceLog.nextSeq(),
+          tool: name,
+          startedAt,
+          endedAt: new Date().toISOString(),
+          params: parsedArguments,
+          urlBefore,
+          urlAfter: context.currentTab()?.page.url(),
+          targets: [],
+          network: [],
+          mutating: false,
+          waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
+          code: response.code(),
+          error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
+        });
+      } catch (e) {
+        debug('pw:tools:error')(e);
+      }
     }
     if (this._disconnected)
       responseObject.isClose = true;

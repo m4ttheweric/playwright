@@ -64,3 +64,21 @@ test('tool errors are recorded with error field', async ({ startClient, server }
   expect(lines[1].tool).toBe('browser_click');
   expect(typeof lines[1].error).toBe('string');
 });
+
+test('a trace-write failure does not affect the tool response', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const actionsFile = path.join(outputDir, traceDir, 'actions.jsonl');
+
+  // Make the trace file unwritable so the next appendRecord() throws (EACCES),
+  // simulating ENOSPC / output-dir-removed style failures.
+  await fs.promises.chmod(actionsFile, 0o444);
+  try {
+    const result = await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+    expect(result.isError).toBeFalsy();
+  } finally {
+    await fs.promises.chmod(actionsFile, 0o644);
+  }
+});
