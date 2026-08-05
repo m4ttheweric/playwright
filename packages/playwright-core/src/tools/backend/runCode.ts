@@ -24,6 +24,8 @@ import { ManualPromise } from '@isomorphic/manualPromise';
 import { defineTabTool } from './tool';
 import { beginScriptCapture, endScriptCapture } from './scriptCapture';
 
+import type { ScriptCapture } from './scriptCapture';
+
 // Type-only: the client instrumentation object (`page._instrumentation`) is
 // reached at runtime via a property read on the already-live `tab.page`
 // (below), not via a value import -- `client/**` is outside this backend's
@@ -71,7 +73,10 @@ const runCode = defineTabTool({
     // `capture` guards against it). Reached here via a plain property read on
     // the already-live object, not an import.
     const instrumentation = (tab.page as any)._instrumentation as ClientInstrumentation | undefined;
-    const capture = beginScriptCapture();
+    // Assigned inside the try below, not here -- see the comment at that
+    // assignment for why (leak risk in scriptCapture.ts's process-wide
+    // activeCaptures Set otherwise).
+    let capture: ScriptCapture | undefined;
     const listener: ClientInstrumentationListener = {
       onApiCallBegin: (apiCall, channel) => {
         // `_instrumentation` is one Proxy shared by every BrowserBackend in
@@ -79,9 +84,11 @@ const runCode = defineTabTool({
         // (clientInstrumentation.ts's `for (const listener of listeners) ...`)
         // is synchronous and unguarded, so a throw here would break every
         // OTHER in-flight API call being reported process-wide, not just
-        // this one. Best-effort capture only.
+        // this one. Best-effort capture only. `capture` is read via the
+        // closure and may still be undefined for the brief window before the
+        // try below assigns it, hence the optional chain.
         try {
-          capture.actions.push({ apiName: apiCall.apiName, params: channel.params });
+          capture?.actions.push({ apiName: apiCall.apiName, params: channel.params });
         } catch {
         }
       },
@@ -104,6 +111,17 @@ const runCode = defineTabTool({
         __end__.reject(reason instanceof Error ? reason : new Error(String(reason)));
     });
     try {
+      // Started here, inside the guarded try, not above it: beginScriptCapture()
+      // registers `capture` in scriptCapture.ts's process-wide activeCaptures
+      // Set. If it ran before this try (as it originally did) and anything
+      // between that call and here threw -- vm.createContext or
+      // onUnhandledRejection above are both capable of it in principle --
+      // the capture would never reach endScriptCapture() in the finally
+      // below, leaking it in the Set forever: every later
+      // browser_run_code_unsafe call in this process would then see a
+      // phantom overlap and permanently degrade to actions: [], for the life
+      // of the process. Same reasoning as addListener just below it.
+      capture = beginScriptCapture();
       instrumentation?.addListener(listener);
       await tab.waitForCompletion(async () => {
         // Compile the user function separately to avoid template literal escaping issues
@@ -126,7 +144,12 @@ const runCode = defineTabTool({
     } finally {
       unsubscribe();
       instrumentation?.removeListener(listener);
-      tab.context.setScriptTelemetry(epoch, { filename: params.filename, sha256, args: params.args, actions: endScriptCapture(capture) });
+      // `capture` is only unset if beginScriptCapture() itself never ran
+      // (i.e. this finally is unwinding an exception thrown before reaching
+      // it in the try) -- in that case there is nothing registered in
+      // activeCaptures to release, so fall back to an empty actions array
+      // rather than calling endScriptCapture() on nothing.
+      tab.context.setScriptTelemetry(epoch, { filename: params.filename, sha256, args: params.args, actions: capture ? endScriptCapture(capture) : [] });
     }
   },
 });
