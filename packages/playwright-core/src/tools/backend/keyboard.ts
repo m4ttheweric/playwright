@@ -91,7 +91,7 @@ const type = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
-    const { locator, resolved } = await tab.targetLocator(params);
+    const { locator, resolved } = await tab.targetLocator(params, { trace: true });
     const secret = tab.context.lookupSecret(params.text);
 
     const action = async () => {

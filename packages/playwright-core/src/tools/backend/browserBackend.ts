@@ -122,7 +122,6 @@ export class BrowserBackend implements ServerBackend {
       // never override an already-computed responseObject, so swallow-and-log.
       try {
         const telemetry = context.takeActionTelemetry();
-        const network = telemetry?.network ?? [];
         traceLog?.appendRecord({
           v: 1,
           seq: traceLog.nextSeq(),
@@ -132,10 +131,10 @@ export class BrowserBackend implements ServerBackend {
           params: parsedArguments,
           urlBefore,
           urlAfter: context.currentTab()?.page.url(),
-          targets: [],
-          network,
-          mutating: network.some(n => !SAFE_METHODS.has(n.method.toUpperCase())),
-          waits: telemetry?.waits ?? { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
+          targets: telemetry.targets,
+          network: telemetry.network,
+          mutating: telemetry.network.some(n => !SAFE_METHODS.has(n.method.toUpperCase())),
+          waits: telemetry.waits,
           code: response.code(),
           error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
         });

@@ -30,6 +30,25 @@ export type TraceTarget = {
   name?: string;
   description?: string;    // accessible description, else accessible name
 };
+// Classifies a `Locator._selectorCandidates()` candidate string by its engine
+// prefix. Candidates are ordered best-first from `generateSelector`; most are
+// `internal:<engine>=...` (or, for a couple of legacy engines, `<engine>=...`
+// with no `internal:` marker). A candidate with no recognized engine prefix
+// at all is a bare CSS selector (e.g. `#save-btn`, `span`) -- `generateSelector`
+// never prefixes its plain-CSS fallback with `css=`, so "no prefix" must map
+// to `css`, not `other`. Engines outside the four kinds this trace format
+// tracks (e.g. `internal:label`, `internal:attr`) fall through to `other`.
+export function traceLocatorKind(candidate: string): TraceLocator['kind'] {
+  const engine = /^(?:internal:)?([a-zA-Z-]+)=/.exec(candidate)?.[1];
+  switch (engine) {
+    case 'role': return 'role';
+    case 'testid': return 'testid';
+    case 'text': return 'text';
+    case 'css': return 'css';
+    default: return engine ? 'other' : 'css';
+  }
+}
+
 export type TraceNetworkEntry = { method: string, url: string, resourceType: string, status?: number, failed?: boolean };
 export type TraceScriptAction = { apiName: string, params?: unknown, error?: string };
 export type TraceRecord = {

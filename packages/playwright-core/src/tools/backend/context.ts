@@ -29,7 +29,7 @@ import { Tab } from './tab';
 
 import type * as playwrightTypes from '../../..';
 import type { SessionLog } from './sessionLog';
-import type { TraceLog, TraceNetworkEntry } from './traceLog';
+import type { TraceLog, TraceNetworkEntry, TraceTarget } from './traceLog';
 import type { Disposable } from '@isomorphic/disposable';
 import type { ToolCapability } from './tool';
 
@@ -110,10 +110,28 @@ type VideoParams = { size?: { width: number; height: number } };
 // epoch (bumped in beginAction, called before the tool runs); a telemetry write
 // tagged with a stale epoch is silently dropped instead of corrupting the next
 // trace record.
-export type ActionTelemetry = {
+// The network/waits half of an action's telemetry, produced by
+// waitForCompletion() once the action settles. Not every action tool calls
+// waitForCompletion (e.g. browser_hover, browser_select_option resolve their
+// target and act directly) -- setActionTelemetry is simply never called for
+// those, and takeActionTelemetry() below falls back to empty/zeroed values.
+export type ActionNetworkTelemetry = {
   network: TraceNetworkEntry[];
   waits: { settleMs: number, awaitedNavigation: boolean, awaitedRequests: number };
 };
+
+// Everything the dispatch seam in BrowserBackend.callTool needs to fill in a
+// TraceRecord, drained once per call by takeActionTelemetry().
+export type ActionTelemetry = ActionNetworkTelemetry & {
+  targets: TraceTarget[];
+};
+
+// Fresh object per call -- TraceRecord.waits ends up serialized independently
+// per trace line, so nothing is gained (and an aliasing hazard is risked) by
+// sharing one instance across calls.
+function zeroWaits(): ActionNetworkTelemetry['waits'] {
+  return { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 };
+}
 
 export class Context {
   readonly config: ContextConfig;
@@ -134,7 +152,16 @@ export class Context {
 
   private _runningToolName: string | undefined;
   private _actionEpoch = 0;
-  private _actionTelemetry: ActionTelemetry | undefined;
+  private _actionTelemetry: ActionNetworkTelemetry | undefined;
+  // Separate from _actionTelemetry (and not folded into one object with it)
+  // because target enrichment happens earlier in a tool's handle() -- while
+  // resolving the locator, before the action itself runs -- than
+  // setActionTelemetry, which only fires once waitForCompletion's action
+  // settles (and some tools, e.g. browser_hover, never call it at all). Two
+  // independent take-once slots, both gated by the same epoch, avoids having
+  // to merge into a possibly-not-yet-created telemetry object from whichever
+  // of the two writers happens to run first.
+  private _actionTargets: TraceTarget[] = [];
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -336,6 +363,7 @@ export class Context {
   beginAction(): number {
     this._actionEpoch++;
     this._actionTelemetry = undefined;
+    this._actionTargets = [];
     return this._actionEpoch;
   }
 
@@ -347,16 +375,34 @@ export class Context {
   // means the action that produced this data was superseded by a later tool
   // call (see ActionTelemetry) while it kept running in the background; the
   // write is dropped rather than corrupting the current call's trace record.
-  setActionTelemetry(epoch: number, telemetry: ActionTelemetry) {
+  setActionTelemetry(epoch: number, telemetry: ActionNetworkTelemetry) {
     if (epoch !== this._actionEpoch)
       return;
     this._actionTelemetry = telemetry;
   }
 
-  takeActionTelemetry(): ActionTelemetry | undefined {
+  // Records one enriched target for the action tagged with `epoch`, called
+  // while a ref-based action tool (click/type/hover/select_option/drag)
+  // resolves its locator(s) in Tab.targetLocators. Same epoch discipline as
+  // setActionTelemetry and for the same reason: a target resolved by an
+  // action that a later tool call has since superseded must not attach
+  // itself to that later call's trace record.
+  addActionTarget(epoch: number, target: TraceTarget) {
+    if (epoch !== this._actionEpoch)
+      return;
+    this._actionTargets.push(target);
+  }
+
+  takeActionTelemetry(): ActionTelemetry {
     const telemetry = this._actionTelemetry;
+    const targets = this._actionTargets;
     this._actionTelemetry = undefined;
-    return telemetry;
+    this._actionTargets = [];
+    return {
+      network: telemetry?.network ?? [],
+      waits: telemetry?.waits ?? zeroWaits(),
+      targets,
+    };
   }
 
   private async _setupRequestInterception(context: playwrightTypes.BrowserContext) {

@@ -26,9 +26,11 @@ import { LogFile } from './logFile';
 import { ModalState } from './tool';
 import { handleDialog } from './dialogs';
 import { uploadFile } from './files';
+import { traceLocatorKind } from './traceLog';
 
 import type { Disposable } from '@isomorphic/disposable';
 import type { Context, ContextConfig } from './context';
+import type { TraceTarget } from './traceLog';
 import type * as playwright from '../../..';
 
 const TabEvents = {
@@ -470,14 +472,23 @@ export class Tab extends EventEmitter<TabEventsInterface> {
     await this._raceAgainstModalStates(() => waitForCompletion(this, callback));
   }
 
-  async targetLocator(params: { element?: string, target: string }): Promise<{ locator: playwright.Locator, resolved: string }> {
+  async targetLocator(params: { element?: string, target: string }, options?: { trace?: boolean }): Promise<{ locator: playwright.Locator, resolved: string }> {
     await this._initializedPromise;
-    return (await this.targetLocators([params]))[0];
+    return (await this.targetLocators([params], options))[0];
   }
 
-  async targetLocators(params: { element?: string, target: string }[]): Promise<{ locator: playwright.Locator, resolved: string }[]> {
+  // `options.trace` is opt-in, not implied by "goes through targetLocators":
+  // most callers (browser_snapshot's optional target, browser_check,
+  // verify.ts, evaluate.ts, ...) resolve locators for their own purposes and
+  // must keep recording empty targets. Only the ref-based action tools
+  // (click, type, hover, select_option, drag) pass `trace: true`.
+  async targetLocators(params: { element?: string, target: string }[], options?: { trace?: boolean }): Promise<{ locator: playwright.Locator, resolved: string }[]> {
     await this._initializedPromise;
-    return Promise.all(params.map(async param => {
+    // Captured up front, before resolution, same as waitForCompletion's own
+    // epoch capture: by the time enrichment finishes below, a later tool
+    // dispatch could have already bumped the epoch.
+    const epoch = this.context.currentActionEpoch();
+    const results = await Promise.all(params.map(async param => {
       if (!param.target.match(/^(f\d+)?e\d+$/)) {
         const selector = locatorOrSelectorAsSelector('javascript', param.target, this.context.config.testIdAttribute || 'data-testid');
         const handle = await this.page.$(selector);
@@ -497,6 +508,38 @@ export class Tab extends EventEmitter<TabEventsInterface> {
         }
       }
     }));
+    if (options?.trace)
+      await Promise.all(params.map((param, i) => this._recordTarget(epoch, param, results[i])));
+    return results;
+  }
+
+  // Builds a TraceTarget for one resolved target and hands it to the
+  // context's take-once collector. Enrichment must never break the action it
+  // is describing: _selectorCandidates() failure (or any surprise from the
+  // channel round trip) is swallowed, leaving a target with just ref/resolved
+  // rather than losing the whole action's trace record.
+  private async _recordTarget(epoch: number, param: { element?: string, target: string }, result: { locator: playwright.Locator, resolved: string }) {
+    const target: TraceTarget = {
+      ref: param.target.match(/^(f\d+)?e\d+$/) ? param.target : undefined,
+      resolved: result.resolved,
+      alternates: [],
+    };
+    try {
+      // `_selectorCandidates` is intentionally kept off the public Locator
+      // type (Task 4: "underscore-private and undocumented, like other
+      // internal APIs"); reached the same way this file already reaches
+      // other private members not on the public surface, e.g. `(tab.page as
+      // any)._guid` in devtools.ts.
+      // eslint-disable-next-line no-restricted-syntax -- _selectorCandidates is an internal Locator API not on the public playwright.Locator type.
+      const info: { candidates: string[], role?: string, name?: string, description?: string } = await (result.locator as any)._selectorCandidates();
+      target.alternates = info.candidates.map(candidate => ({ kind: traceLocatorKind(candidate), selector: candidate }));
+      target.role = info.role;
+      target.name = info.name;
+      target.description = info.description;
+    } catch (e) {
+      debug('pw:tools:error')(e);
+    }
+    this.context.addActionTarget(epoch, target);
   }
 
   async waitForTimeout(time: number) {

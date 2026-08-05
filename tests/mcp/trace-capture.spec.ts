@@ -152,3 +152,79 @@ test('a dialog-interrupted action does not leak stale telemetry onto a later tra
   const contaminated = afterDialog.some((l: any) => l.network.some((n: any) => n.url.includes('/api/before-alert')));
   expect(contaminated).toBe(false);
 });
+
+test('click records target with locator alternates and accessible role/name', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/target.html', `<nav><button data-testid="export-btn" aria-describedby="hint">Export</button><span id="hint">Exports the report</span></nav>`, 'text/html');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`, '--test-id-attribute=data-testid'] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/target.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const ref = /"Export"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+  await client.callTool({ name: 'browser_click', arguments: { element: 'Export button', target: ref } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const click = lines.find(l => l.tool === 'browser_click');
+  expect(click.targets.length).toBe(1);
+  const target = click.targets[0];
+  expect(target.ref).toBe(ref);
+  expect(target.role).toBe('button');
+  expect(target.name).toBe('Export');
+  expect(target.description).toBe('Exports the report');
+  // A unique, configured-attribute testid always wins generateSelector's
+  // scoring (Task 4 concern #4): `multiple: true` produces a `withText` and
+  // a `withoutText` token, both testid, which dedupe to exactly one
+  // candidate -- there is no role/css alternate to collapse away. Verified
+  // directly against this fixture with a throwaway `_selectorCandidates()`
+  // probe before writing this assertion; the multi-kind case (role + css)
+  // is covered separately below for an element with no testid.
+  const kinds = target.alternates.map((a: any) => a.kind);
+  expect(kinds).toEqual(['testid']);
+});
+
+test('browser_snapshot (read-only) records empty targets, not an enriched action', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const snapshotRecord = lines.find(l => l.tool === 'browser_snapshot');
+  expect(snapshotRecord.targets).toEqual([]);
+});
+
+test('a bare selector candidate with no engine prefix maps to kind css, not other', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/save.html', `<button id="save-btn">Save changes</button>`, 'text/html');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/save.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const ref = /"Save changes"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+  await client.callTool({ name: 'browser_click', arguments: { element: 'Save button', target: ref } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const click = lines.find(l => l.tool === 'browser_click');
+  const cssAlternate = click.targets[0].alternates.find((a: any) => a.selector === '#save-btn');
+  expect(cssAlternate).toBeTruthy();
+  expect(cssAlternate.kind).toBe('css');
+  expect(click.targets[0].alternates.some((a: any) => a.kind === 'other')).toBe(false);
+});
+
+test('drag records targets for both start and end elements', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/drag.html', `<div id="src" draggable="true">Drag me</div><div id="dst">Drop here</div>`, 'text/html');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/drag.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const srcRef = /\[ref=(e\d+)\]:\s*Drag me/.exec(snapshotText)![1];
+  const dstRef = /\[ref=(e\d+)\]:\s*Drop here/.exec(snapshotText)![1];
+  await client.callTool({ name: 'browser_drag', arguments: { startElement: 'source', startTarget: srcRef, endElement: 'dest', endTarget: dstRef } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const drag = lines.find(l => l.tool === 'browser_drag');
+  expect(drag.targets.length).toBe(2);
+  expect(drag.targets[0].ref).toBe(srcRef);
+  expect(drag.targets[1].ref).toBe(dstRef);
+});

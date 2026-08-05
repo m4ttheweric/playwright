@@ -74,7 +74,7 @@ const click = defineTabTool({
   handle: async (tab, params, response) => {
     response.setIncludeSnapshot();
 
-    const { locator, resolved } = await tab.targetLocator(params);
+    const { locator, resolved } = await tab.targetLocator(params, { trace: true });
     const options = {
       button: params.button,
       modifiers: params.modifiers,
@@ -117,7 +117,7 @@ const drag = defineTabTool({
     const [start, end] = await tab.targetLocators([
       { target: params.startTarget, element: params.startElement },
       { target: params.endTarget, element: params.endElement },
-    ]);
+    ], { trace: true });
 
     await tab.waitForCompletion(async () => {
       await start.locator.dragTo(end.locator, tab.actionTimeoutOptions);
@@ -140,7 +140,7 @@ const hover = defineTabTool({
   handle: async (tab, params, response) => {
     response.setIncludeSnapshot();
 
-    const { locator, resolved } = await tab.targetLocator(params);
+    const { locator, resolved } = await tab.targetLocator(params, { trace: true });
     response.addCode(`await page.${resolved}.hover();`);
 
     await locator.hover(tab.actionTimeoutOptions);
@@ -164,7 +164,7 @@ const selectOption = defineTabTool({
   handle: async (tab, params, response) => {
     response.setIncludeSnapshot();
 
-    const { locator, resolved } = await tab.targetLocator(params);
+    const { locator, resolved } = await tab.targetLocator(params, { trace: true });
     response.addCode(`await page.${resolved}.selectOption(${formatObject(params.values)});`);
 
     await locator.selectOption(params.values, tab.actionTimeoutOptions);
