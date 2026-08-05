@@ -411,6 +411,123 @@ test('an oversized array field survives as an array: real entries plus one trail
   expect(kept.length + marker.omittedElements).toBe(network.length);
 });
 
+// Regression coverage for a container-collapse bug the truncation fix above
+// introduced: MARKER_RESERVE_BYTES only reserves headroom for the marker
+// itself, so a trimmed array can land right up against the 64 KB budget --
+// an enclosing object with any sibling keys (script.sha256 alone is 76
+// bytes) then pushed the WHOLE object over budget and hit the (unrelated,
+// unchanged) object-collapse path, losing sha256/filename/args, not just
+// over-trimming actions. Fixed by having an over-budget object shrink its
+// array/object-valued ("compound") properties using whatever budget is left
+// over after its non-shrinkable (scalar) properties, before ever collapsing
+// itself -- see truncateOversizedObject in traceLog.ts.
+test('an oversized nested array does not collapse its enclosing object: script.sha256/filename/args survive', async ({ mcpBrowser }, testInfo) => {
+  test.skip(mcpBrowser !== 'chrome', 'Channel-agnostic; doesn\'t touch a browser at all.');
+  const outputDir = testInfo.outputPath('output');
+  const traceLog = await TraceLog.create(
+      { outputDir },
+      testInfo.outputPath(),
+      { clientName: 'test', runtimeVersion: '0.0.0-test' },
+  );
+  // The re-reviewer's exact scenario: a script whose captured actions array
+  // alone is comfortably over 64 KB, sitting alongside script's other,
+  // individually-tiny keys.
+  const actions = Array.from({ length: 3000 }, (_, i) => ({ apiName: 'locator.click', params: { i } }));
+  expect(Buffer.byteLength(JSON.stringify(actions))).toBeGreaterThan(64 * 1024);
+  const sha256 = 'a'.repeat(64);
+  const args = { who: 'test' };
+
+  traceLog.appendRecord({
+    v: 1,
+    seq: traceLog.nextSeq(),
+    tool: 'browser_run_code_unsafe',
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    params: { code: 'x' },
+    targets: [],
+    network: [],
+    mutating: false,
+    waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
+    code: [],
+    script: { filename: 'foo.js', sha256, args, actions },
+  });
+  await traceLog.close();
+
+  const lines = fs.readFileSync(path.join(traceLog.folder, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const record = lines[0];
+
+  // Record identity core intact.
+  expect(record.v).toBe(1);
+  expect(record.tool).toBe('browser_run_code_unsafe');
+
+  // script did NOT collapse to a bare { __truncated__, sizeBytes } marker --
+  // its scalar/object siblings survive alongside the trimmed array.
+  expect(record.script.sha256).toBe(sha256);
+  expect(record.script.filename).toBe('foo.js');
+  expect(record.script.args).toEqual(args);
+
+  // script.actions stays a parseable array: real leading entries (in
+  // original order) plus a trailing marker, not the whole array replaced.
+  expect(Array.isArray(record.script.actions)).toBe(true);
+  expect(record.script.actions.length).toBeGreaterThan(1);
+  expect(record.script.actions.length).toBeLessThan(actions.length);
+  const marker = record.script.actions[record.script.actions.length - 1];
+  expect(marker.__truncated__).toBe(true);
+  expect(typeof marker.omittedElements).toBe('number');
+  expect(marker.omittedElements).toBeGreaterThan(0);
+  // sizeBytes is the TRUE full array's size, not an already-trimmed
+  // intermediate's -- this is what a naive "trim once at full budget, then
+  // re-trim with a smaller budget" fix would get wrong.
+  expect(marker.sizeBytes).toBe(Buffer.byteLength(JSON.stringify(actions)));
+  const kept = record.script.actions.slice(0, -1);
+  for (let i = 0; i < kept.length; i++)
+    expect(kept[i]).toEqual(actions[i]);
+  expect(kept.length + marker.omittedElements).toBe(actions.length);
+
+  // The `script` field itself still honors the 64 KB single-value budget.
+  expect(Buffer.byteLength(JSON.stringify(record.script))).toBeLessThanOrEqual(64 * 1024);
+});
+
+test('an oversized array in params does not collapse params: sibling keys survive', async ({ mcpBrowser }, testInfo) => {
+  test.skip(mcpBrowser !== 'chrome', 'Channel-agnostic; doesn\'t touch a browser at all.');
+  const outputDir = testInfo.outputPath('output');
+  const traceLog = await TraceLog.create(
+      { outputDir },
+      testInfo.outputPath(),
+      { clientName: 'test', runtimeVersion: '0.0.0-test' },
+  );
+  const items = Array.from({ length: 2000 }, (_, i) => ({ x: i, y: 'z'.repeat(30) }));
+  expect(Buffer.byteLength(JSON.stringify(items))).toBeGreaterThan(64 * 1024);
+
+  traceLog.appendRecord({
+    v: 1,
+    seq: traceLog.nextSeq(),
+    tool: 'browser_run_code_unsafe',
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    params: { code: 'some code', label: 'hello', items },
+    targets: [],
+    network: [],
+    mutating: false,
+    waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
+    code: [],
+  });
+  await traceLog.close();
+
+  const lines = fs.readFileSync(path.join(traceLog.folder, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const record = lines[0];
+
+  // params did NOT collapse -- its scalar sibling keys survive.
+  expect(record.params.code).toBe('some code');
+  expect(record.params.label).toBe('hello');
+  expect(Array.isArray(record.params.items)).toBe(true);
+  expect(record.params.items.length).toBeGreaterThan(1);
+  expect(record.params.items.length).toBeLessThan(items.length);
+  const marker = record.params.items[record.params.items.length - 1];
+  expect(marker.__truncated__).toBe(true);
+  expect(marker.omittedElements).toBeGreaterThan(0);
+});
+
 test('meta.json gains endedAt when the client disconnects cleanly', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });

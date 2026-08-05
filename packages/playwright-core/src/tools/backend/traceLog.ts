@@ -60,7 +60,12 @@ export type TraceScriptAction = { apiName: string, params?: unknown, error?: str
 // these fields expecting an array, never a bare object). `omittedElements`
 // counts entries dropped from the END of the array (kept elements are always
 // a prefix); `sizeBytes` is the post-walk serialized size of the FULL array
-// before trimming, not of the marker or the kept prefix.
+// before trimming, not of the marker or the kept prefix -- EXCEPT when this
+// marker comes from scriptCapture.ts's MAX_CAPTURED_ACTIONS cap (a different
+// producer of this same marker shape, upstream of and unrelated to this
+// file's own truncation): there, entries past the cap were never retained in
+// the first place, so `sizeBytes` is the serialized size of the kept
+// (capped) entries instead -- there is no "full" array to honestly measure.
 export type TraceTruncationMarker = { __truncated__: true, omittedElements: number, sizeBytes: number };
 
 // This trace format's schema version. Used for both meta.json's
@@ -106,28 +111,56 @@ function safeSerializedByteLength(value: unknown): number | undefined {
   }
 }
 
-// Deep-walks a single record FIELD's value bottom-up, replacing any string
-// leaf -- or any object/array whose serialized size is still too large after
-// its own children have been walked -- with `{ __truncated__: true,
-// sizeBytes }`. Bottom-up (rather than checking each container's size before
-// recursing) is what lets one oversized leaf (e.g. `script.args.big`) get
-// replaced in place instead of the whole enclosing object being discarded.
+// Deep-walks a single record FIELD's value bottom-up against a byte
+// `budget`, replacing any string leaf that's individually too large with
+// `{ __truncated__: true, sizeBytes }`, trimming any oversized array to a
+// fitting prefix plus a TraceTruncationMarker (see truncateArrayIfOversized
+// below), and -- for a plain object -- collapsing it to a bare marker ONLY
+// once it's confirmed there's no cheaper way to make it fit.
+//
+// That "confirmed" is the point of this function existing separately from a
+// naive bottom-up collapse: an object whose own scalar keys are small but
+// which also holds one oversized array- or object-valued key (e.g.
+// `script`: {filename, sha256, args} alongside a huge `actions`) must not
+// lose `sha256`/`filename`/`args` just because the object's *aggregate*
+// size (dominated by `actions`) exceeds budget -- the fix is to shrink
+// `actions` harder, using whatever budget the object has left over after
+// its other keys, not to discard the whole object. Collapsing the whole
+// object is the last resort: it happens only when the object's own
+// non-shrinkable (scalar) content alone already exceeds budget, or when
+// even every shrinkable child squeezed as far as its share of the leftover
+// budget allows still doesn't leave enough room.
 //
 // Deliberately never called on the whole TraceRecord at once (see
 // appendRecord below): the 64 KB rule is scoped to "any single record
 // value," not to the record's aggregate size, so appendRecord invokes this
-// once per top-level field instead of once on `record` as a unit. That keeps
-// identity fields (v, seq, tool, timestamps, urls, mutating, error) safe by
-// construction -- there is no code path where the record itself is treated
-// as a collapsible leaf -- rather than by special-casing their key names.
+// once per top-level field (each with the full MAX_VALUE_BYTES budget)
+// instead of once on `record` as a unit. That keeps identity fields (v,
+// seq, tool, timestamps, urls, mutating, error) safe by construction --
+// there is no code path where the record itself is treated as a
+// collapsible leaf -- rather than by special-casing their key names.
+// Nested containers (an object inside a field, an object inside an array
+// element, ...) recurse into this same function at their own level, each
+// applying the same "shrink my shrinkable children before collapsing
+// myself" logic independently -- an oversized `script.args` gets its own
+// chance to save itself via any array-valued key of its own, and the
+// (now-appropriately-sized) result is treated as `script`'s fixed cost for
+// deciding how much budget is left over for `script.actions`. This is what
+// makes "args inside script inside record" -- an object-valued sibling
+// that itself contains a large array, not just a large array directly --
+// work correctly rather than only handling one level of nesting.
 //
 // `ancestors` guards against cycles: values are JSON-derived (parsed tool
 // arguments, telemetry we built ourselves) so a cycle should never occur,
 // but this call sits ahead of JSON.stringify inside appendRecord's own
 // try/catch-less call site -- a throw here would silently lose the whole
 // trace record, so the walk is made cycle-safe as cheap insurance rather
-// than trusting that invariant.
-function truncateOversizedValues(value: unknown, ancestors: Set<object> = new Set()): unknown {
+// than trusting that invariant. `value` stays registered in `ancestors` for
+// this whole call (via try/finally, since an object can take two internal
+// passes over its properties below) rather than being released as soon as
+// the first pass finishes -- a self-reference reachable only from the
+// second, budget-reduced pass must still be caught.
+function truncateOversizedValues(value: unknown, budget: number, ancestors: Set<object> = new Set()): unknown {
   if (typeof value === 'string') {
     const size = Buffer.byteLength(value);
     return size > MAX_VALUE_BYTES ? { __truncated__: true, sizeBytes: size } : value;
@@ -140,48 +173,128 @@ function truncateOversizedValues(value: unknown, ancestors: Set<object> = new Se
   // this is cheap insurance, not a path expected to fire.
   if (ancestors.has(value))
     return { __truncated__: true };
-
   ancestors.add(value);
-  const walked: unknown = Array.isArray(value)
-    ? value.map(item => truncateOversizedValues(item, ancestors))
-    : Object.fromEntries(Object.entries(value).map(([k, v]) => [k, truncateOversizedValues(v, ancestors)]));
-  ancestors.delete(value);
+  try {
+    return Array.isArray(value)
+      ? truncateOversizedArray(value, budget, ancestors)
+      : truncateOversizedObject(value, budget, ancestors);
+  } finally {
+    ancestors.delete(value);
+  }
+}
 
-  // Arrays never collapse to a bare marker object -- that would break the
-  // declared array type of every array-shaped TraceRecord field (`network`,
-  // `targets`, `code`, `script.actions`), which WS2 codes against expecting
-  // an array, never an object. Object (non-array) containers keep the
-  // original collapse-to-marker behavior below.
-  if (Array.isArray(walked))
-    return truncateArrayIfOversized(walked);
+function truncateOversizedArray(value: unknown[], budget: number, ancestors: Set<object>): unknown[] {
+  // Elements are each individually walked at the standard full budget -- an
+  // array's overall by-COUNT trim (governed by `budget`, which may be a
+  // sibling-reduced budget passed down from an enclosing object) is a
+  // separate concern from what any one kept element's own internal content
+  // is allowed to occupy; every element still gets the same "any individual
+  // record value" allowance regardless of how tight its array's own
+  // count-budget ends up being.
+  const elements = value.map(item => truncateOversizedValues(item, MAX_VALUE_BYTES, ancestors));
+  return truncateArrayIfOversized(elements, budget);
+}
 
-  const size = safeSerializedByteLength(walked);
-  if (size !== undefined && size > MAX_VALUE_BYTES)
+function truncateOversizedObject(value: object, budget: number, ancestors: Set<object>): unknown {
+  // Split properties into "fixed" (string/number/boolean/null -- resolved
+  // once, and treated as a non-shrinkable cost from this object's point of
+  // view) and "compound" (object- or array-valued -- shrinkable, and
+  // deliberately given an optimistic first resolution at the FULL standard
+  // budget rather than sharing this object's `budget` up front, so a small
+  // object that easily fits doesn't get needlessly split down).
+  const fixed: Record<string, unknown> = {};
+  const compoundKeys: string[] = [];
+  const compoundRaw = new Map<string, unknown>();
+  for (const [k, v] of Object.entries(value)) {
+    if (v !== null && typeof v === 'object') {
+      compoundKeys.push(k);
+      compoundRaw.set(k, v);
+    } else {
+      fixed[k] = truncateOversizedValues(v, MAX_VALUE_BYTES, ancestors);
+    }
+  }
+  const resolved: Record<string, unknown> = { ...fixed };
+  for (const k of compoundKeys)
+    resolved[k] = truncateOversizedValues(compoundRaw.get(k), MAX_VALUE_BYTES, ancestors);
+
+  const size = safeSerializedByteLength(resolved);
+  if (size === undefined || size <= budget)
+    return resolved; // Fits as-is, every compound property at its natural size.
+  if (compoundKeys.length === 0)
     return { __truncated__: true, sizeBytes: size };
-  return walked;
+
+  // Doesn't fit at natural size. Price the properties that truly can't
+  // shrink -- the fixed ones, plus each compound property's key label,
+  // represented here by a cheap `null` placeholder standing in for
+  // "whatever this compound property eventually costs" -- to find out how
+  // much budget is genuinely left over for the compound properties
+  // combined. If even that skeleton doesn't fit, no amount of shrinking the
+  // compound properties can save this object.
+  const skeleton: Record<string, unknown> = { ...fixed };
+  for (const k of compoundKeys)
+    skeleton[k] = null;
+  const skeletonSize = safeSerializedByteLength(skeleton);
+  if (skeletonSize === undefined || skeletonSize > budget)
+    return { __truncated__: true, sizeBytes: size };
+
+  // Water-filling: give each compound property its full natural size when
+  // that already fits within an equal share of what's left (smallest
+  // natural size first), rather than shrinking every compound property to
+  // an equal split regardless of need -- a `script.actions: []` sibling
+  // shouldn't eat into the budget a genuinely oversized `script.args` needs
+  // just because both happen to be "compound." Only re-resolved (from the
+  // original raw value, at the reduced share) when the natural size doesn't
+  // already fit -- re-resolving from raw, not from the already-computed
+  // natural result, is what keeps any resulting marker's sizeBytes honest.
+  let remainingBudget = budget - skeletonSize;
+  let remainingCount = compoundKeys.length;
+  const byNaturalSize = compoundKeys
+      .map(k => ({ k, naturalSize: safeSerializedByteLength(resolved[k]) ?? 0 }))
+      .sort((a, b) => a.naturalSize - b.naturalSize);
+  for (const { k, naturalSize } of byNaturalSize) {
+    const fairShare = Math.floor(remainingBudget / remainingCount);
+    if (naturalSize > fairShare)
+      resolved[k] = truncateOversizedValues(compoundRaw.get(k), fairShare, ancestors);
+    remainingBudget -= Math.min(naturalSize, fairShare);
+    remainingCount--;
+  }
+
+  const finalSize = safeSerializedByteLength(resolved);
+  if (finalSize !== undefined && finalSize <= budget)
+    return resolved;
+
+  // Even every compound property shrunk as far as its share of the
+  // remaining budget allows still doesn't fit (e.g. several compound
+  // siblings splitting too small a remainder to hold even their own
+  // markers) -- collapse as the last resort.
+  return { __truncated__: true, sizeBytes: size };
 }
 
 // Reserved headroom subtracted from the byte budget so the trailing marker
 // itself (plus the array's own `[`/`]`/comma punctuation) never pushes the
-// final serialized array back over MAX_VALUE_BYTES. The marker serializes to
+// final serialized array back over its budget. The marker serializes to
 // well under 100 bytes for any realistic omittedElements/sizeBytes value;
 // this is a generous, cheap-to-reason-about margin, not a tight fit.
 const MARKER_RESERVE_BYTES = 128;
 
 // Keeps the array's declared type intact even when oversized: walks the
 // (already element-wise-truncated) array once, in order, accumulating a
-// running byte total until the next element would exceed the budget, then
+// running byte total until the next element would exceed `budget`, then
 // appends one TraceTruncationMarker summarizing everything past that point.
-// Single pass over precomputed per-element sizes -- deliberately not
+// `budget` is the standard MAX_VALUE_BYTES for a top-level field or a plain
+// array-typed nested value, or a smaller, sibling-reduced share of it when
+// called from an enclosing object's own truncateOversizedValues (see
+// above) trying to save the rest of that object from collapsing. Single
+// pass over precomputed per-element sizes -- deliberately not
 // re-serializing the growing kept-so-far array on each iteration, which
 // would make this O(n^2) for large arrays (e.g. a run_code script's capped
 // but still up-to-10,000-element `actions` array).
-function truncateArrayIfOversized(walked: unknown[]): unknown[] {
+function truncateArrayIfOversized(walked: unknown[], budget: number): unknown[] {
   const fullSize = safeSerializedByteLength(walked);
-  if (fullSize === undefined || fullSize <= MAX_VALUE_BYTES)
+  if (fullSize === undefined || fullSize <= budget)
     return walked;
 
-  const budget = MAX_VALUE_BYTES - MARKER_RESERVE_BYTES;
+  const arrayBudget = budget - MARKER_RESERVE_BYTES;
   const kept: unknown[] = [];
   let runningBytes = 2; // '[' + ']'
   for (const item of walked) {
@@ -189,15 +302,19 @@ function truncateArrayIfOversized(walked: unknown[]): unknown[] {
     if (itemBytes === undefined)
       break; // can't safely size this element (e.g. a surviving cycle guard); stop keeping here.
     const additional = itemBytes + (kept.length > 0 ? 1 : 0); // +1 for the separating comma
-    if (runningBytes + additional > budget)
+    if (runningBytes + additional > arrayBudget)
       break;
     runningBytes += additional;
     kept.push(item);
   }
 
+  // `fullSize > budget > arrayBudget` (budget minus a positive reserve) is
+  // exactly the guard above, so the running total -- which tracks fullSize
+  // element-for-element -- is mathematically guaranteed to cross
+  // `arrayBudget` before every element can be kept. omittedElements is
+  // therefore always > 0 here; there is no "kept everything after all"
+  // case to special-case.
   const omittedElements = walked.length - kept.length;
-  if (omittedElements === 0)
-    return kept;
   const marker: TraceTruncationMarker = { __truncated__: true, omittedElements, sizeBytes: fullSize };
   return [...kept, marker];
 }
@@ -254,7 +371,7 @@ export class TraceLog {
     // collapses alone, leaving its siblings (and the record shape) intact.
     const safeRecord: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(record))
-      safeRecord[key] = truncateOversizedValues(value);
+      safeRecord[key] = truncateOversizedValues(value, MAX_VALUE_BYTES);
     fs.appendFileSync(this._actionsFile, JSON.stringify(safeRecord) + '\n');
   }
 
