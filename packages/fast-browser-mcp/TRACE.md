@@ -25,6 +25,50 @@ enabled per session with the `--save-trace` CLI flag or the
 product contract, covered by
 `tests/mcp/fast-browser-contract.spec.ts`.
 
+### `--save-trace` off means no capture work, not just no output
+
+The absence of a `trace-*` directory is the visible half of the contract;
+the other half is that nothing upstream of "no directory" runs either.
+Three capture paths are gated on `Context.traceLog` being set (i.e. on a
+trace actually being active), not merely on a tool having opted into
+tracing in principle:
+
+- **Element targeting enrichment** (`Tab.targetLocators`,
+  `packages/playwright-core/src/tools/backend/tab.ts`) — the seven
+  ref-based action tools pass `{ trace: true }` unconditionally, but
+  `_recordTarget`'s `_selectorCandidates()` channel round trip only runs
+  when `this.context.traceLog` is also set. With tracing off, `targets`
+  enrichment does zero extra channel work, not just zero extra output.
+- **Per-request network bookkeeping**
+  (`packages/playwright-core/src/tools/backend/utils.ts`'s
+  `waitForCompletion`) — the `request.response()` call that populates
+  `TraceNetworkEntry.status`/`failed` only runs when `tab.context.traceLog`
+  is set. The non-telemetry await logic this function also performs (the
+  settle wait, awaiting in-flight requests to finish) is unaffected either
+  way — that behavior belongs to `waitForCompletion`'s own contract, not to
+  tracing, and must stay byte-identical regardless of `--save-trace`.
+- **Script capture** (`browser_run_code_unsafe`,
+  `packages/playwright-core/src/tools/backend/runCode.ts`) —
+  `beginScriptCapture()`/`instrumentation.addListener(...)` only run when
+  `tab.context.traceLog` is set. With tracing off, a `run_code` call never
+  registers a process-wide instrumentation listener or consumes a slot in
+  `scriptCapture.ts`'s contamination tracking on tracing's account.
+
+In all three cases, the tool's actual browser behavior is identical with
+tracing on or off — only the bookkeeping that exists purely to populate a
+trace record is skipped. Regression coverage: `no trace dir without
+--save-trace` in `tests/mcp/fast-browser-contract.spec.ts` covers the
+visible half of the contract end-to-end (still the most useful automated
+signal, since it runs the full flag-off path through a real MCP session).
+The three gates above are point conditionals on `context.traceLog`
+reviewable directly at their call sites; an end-to-end test cannot honestly
+assert "no `_selectorCandidates()` channel traffic occurred" or "no
+instrumentation listener was registered" without a spy inside the server
+process, which is a separate process across the test's stdio transport —
+there is no test-only seam to observe that from outside. Treat the gates
+themselves, plus this document, as the contract; the flag-off contract test
+is the regression guard for the observable half of it.
+
 ## Directory layout
 
 Each traced session gets its own directory, created once per client
@@ -49,25 +93,39 @@ Written once at session start, rewritten once at clean close:
   "clientName": "...",
   "cwd": "...",
   "runtimeVersion": "1.62.0-next",
+  "productVersion": "0.1.0-alpha.1",
   "protocolVersion": 2,
   "startedAt": "2026-01-01T00:00:00.000Z",
   "endedAt": "2026-01-01T00:05:00.000Z"
 }
 ```
 
-- `schemaVersion` is this document's version (currently `1`). It versions
-  the trace format itself, independently of `protocolVersion` (the Fast
-  Browser extension protocol, currently `2`) and of the Fast Browser
-  product release schema (see `COMPATIBILITY.md`). All three numbers move
+- `schemaVersion` is this document's version, exported as
+  `TRACE_SCHEMA_VERSION` from `traceLog.ts` (currently `1`, the same
+  constant used for every record's `v`, below). It versions the trace
+  format itself, independently of `protocolVersion` (the Fast Browser
+  extension protocol, currently `2`) and of the Fast Browser product
+  release schema (see `COMPATIBILITY.md`). All three numbers move
   independently.
 - `runtimeVersion` is `packageJSON.version` read from the forked
   `playwright-core` package
   (`packages/playwright-core/src/tools/backend/utils.ts`'s `packageJSON`,
   threaded through `BrowserBackend.initialize`) — **not** the shipped
-  Fast Browser product version (`packages/fast-browser-mcp/package.json`,
-  currently `0.1.0`). At the time of writing this reports something like
-  `1.62.0-next`. Do not use this field to detect the Fast Browser product
-  version; there is currently no field in `meta.json` that reports it.
+  Fast Browser product version. At the time of writing this reports
+  something like `1.62.0-next`.
+- `productVersion` is the shipped Fast Browser product version
+  (`packages/fast-browser-mcp/package.json`, e.g. `0.1.0-alpha.1` once
+  built via `utils/fast_browser/build_artifacts.mjs --version ...`) —
+  `mcp/program.ts`'s `serverVersion`, threaded through
+  `ContextConfig.productVersion` into `TraceLog.create()` (backend/ cannot
+  import from `mcp/`, see DEPS.list, hence the data-threading rather than
+  a direct import). Optional: any `BrowserBackend` construction path that
+  doesn't thread a product version through (there are a few outside the
+  MCP server itself, e.g. the trace-snapshot debug CLI) leaves this field
+  absent, not a placeholder value.
+- `protocolVersion` is `mcp/protocol.ts`'s `VERSION`, threaded the same way
+  as `productVersion` for the same DEPS.list reason — `traceLog.ts` no
+  longer hardcodes this number.
 - `endedAt` is present only after a clean close (`BrowserBackend.dispose` →
   `TraceLog.close()`). Its absence means the session ended without a clean
   close (crash, kill -9, ...), not that the trace is corrupt — everything
@@ -118,8 +176,27 @@ export type TraceTarget = {
 
 export type TraceNetworkEntry = { method: string, url: string, resourceType: string, status?: number, failed?: boolean };
 export type TraceScriptAction = { apiName: string, params?: unknown, error?: string };
+
+// Appended as the final element of a truncated array field in place of
+// collapsing the whole array to a bare marker object (see
+// truncateArrayIfOversized below) -- this is what lets `network`, `targets`,
+// `code`, and `script.actions` keep their declared array type even when
+// oversized, which is load-bearing for WS2 (the downstream compiler reads
+// these fields expecting an array, never a bare object). `omittedElements`
+// counts entries dropped from the END of the array (kept elements are always
+// a prefix); `sizeBytes` is the post-walk serialized size of the FULL array
+// before trimming, not of the marker or the kept prefix.
+export type TraceTruncationMarker = { __truncated__: true, omittedElements: number, sizeBytes: number };
+
+// This trace format's schema version. Used for both meta.json's
+// `schemaVersion` and every record's `v` -- the two are the same number by
+// design (meta.json's own comment on this documents why: a record is
+// self-describing even read out of context of its meta.json). Bump this,
+// not the two call sites, when the schema changes.
+export const TRACE_SCHEMA_VERSION = 1;
+
 export type TraceRecord = {
-  v: 1,
+  v: typeof TRACE_SCHEMA_VERSION,
   seq: number,
   tool: string,
   startedAt: string,       // ISO-8601
@@ -127,20 +204,20 @@ export type TraceRecord = {
   params: unknown,         // parsed tool arguments, raw (trace is local-only)
   urlBefore?: string,
   urlAfter?: string,
-  targets: TraceTarget[],
-  network: TraceNetworkEntry[],
+  targets: (TraceTarget | TraceTruncationMarker)[],
+  network: (TraceNetworkEntry | TraceTruncationMarker)[],
   mutating: boolean,       // any non-GET/HEAD/OPTIONS request in the action window
   waits: { settleMs: number, awaitedNavigation: boolean, awaitedRequests: number },
-  code?: string[],         // generated Playwright code lines the Response collected
-  script?: { filename?: string, sha256: string, args?: unknown, actions: TraceScriptAction[] },
+  code: (string | TraceTruncationMarker)[], // generated Playwright code lines the Response collected; [] minimum, never absent
+  script?: { filename?: string, sha256: string, args?: unknown, actions: (TraceScriptAction | TraceTruncationMarker)[] },
   error?: string,
 };
 ```
 
-`v` is always `1` and is the record-level twin of `meta.json`'s
-`schemaVersion` — every record in a schema-1 trace carries `v: 1`
-individually, so a record is self-describing even read out of context of
-its `meta.json`.
+`v` is always `TRACE_SCHEMA_VERSION` (currently `1`) and is the record-level
+twin of `meta.json`'s `schemaVersion` — every record in a schema-1 trace
+carries `v: 1` individually, so a record is self-describing even read out of
+context of its `meta.json`.
 
 `seq` starts at `1` and increments once per dispatched call
 (`TraceLog.nextSeq()`), scoped to one `TraceLog` instance (one client
@@ -162,19 +239,28 @@ runs and immediately after it returns (success or throw). Either can be
 
 ### `targets` — element targeting, enriched tools only
 
-`targets` is `[]` for every tool call **except** the five ref-based action
+`targets` is `[]` for every tool call **except** the seven ref-based action
 tools that opt in by passing `{ trace: true }` to
 `Tab.targetLocator`/`targetLocators`
 (`packages/playwright-core/src/tools/backend/tab.ts`): **click, type,
-hover, select_option, drag**. Every other tool — including
+hover, select_option, drag, fill_form, drop**. Every other tool — including
 `browser_snapshot`'s own optional `target` parameter, which resolves a real
 locator through the same `targetLocator` code path but without the trace
 flag — always records `targets: []`. An empty array here means "this tool
 doesn't do element targeting enrichment," not "targeting failed."
 
+Passing `{ trace: true }` is necessary but not sufficient: `targetLocators`
+also requires an active trace (`this.context.traceLog`) before it runs
+`_recordTarget`'s `_selectorCandidates()` channel round trip at all. With
+`--save-trace` off, none of the seven tools do this enrichment work —
+`targets` is `[]` for the same reason every other tool's is, and no extra
+channel traffic happens on their account. See **`--save-trace` off means no
+capture work, not just no output**, below.
+
 For an enriched call, one `TraceTarget` is recorded per element the tool
 addressed (one for click/type/hover/select_option, two for drag: start and
-end, in that order).
+end, in that order; `fill_form` records one per field, in field order; `drop`
+records one, for the drop target).
 
 - `ref` is populated only when the call used an aria-ref target
   (`e12`-style); `undefined` for selector-string targets.
@@ -232,14 +318,18 @@ exactly once per dispatched call by the seam in `BrowserBackend.callTool`.
 Not every tool populates this data — only calls that actually go through
 `Tab.waitForCompletion` do; every other call falls back to `network: []`
 and zeroed `waits` (`settleMs: 0, awaitedNavigation: false,
-awaitedRequests: 0`) from `takeActionTelemetry()`'s default. Among the five
-target-enriched tools specifically: **click** and **drag** always call
-`waitForCompletion`; **hover** and **select_option** never do (they resolve
-their target and act directly); **type** only does when its `submit` or
-`slowly` parameter is set — a plain `browser_type` fill call (no `submit`,
-no `slowly`) records empty `network`/zeroed `waits` even though it mutated
-the page, exactly like `hover`/`select_option` (`packages/playwright-core/
-src/tools/backend/keyboard.ts`, `snapshot.ts`). `targets` enrichment is
+awaitedRequests: 0`) from `takeActionTelemetry()`'s default. Among the
+seven target-enriched tools specifically: **click**, **drag**, and **drop**
+always call `waitForCompletion`; **hover** and **select_option** never do
+(they resolve their target and act directly); **type** only does when its
+`submit` or `slowly` parameter is set; **fill_form** never does, regardless
+of field count or type — a plain `browser_type` fill call (no `submit`, no
+`slowly`) and every `browser_fill_form` call record empty `network`/zeroed
+`waits` even though they mutated the page, exactly like
+`hover`/`select_option` (`packages/playwright-core/src/tools/backend/
+keyboard.ts`, `snapshot.ts`, `form.ts`). This is a deliberate, already-ruled
+decision, not a gap to close: wrapping `fill_form` in `waitForCompletion`
+would add settle latency to every field fill. `targets` enrichment is
 independent of this and is unaffected — it happens earlier, while resolving
 the locator, regardless of whether the tool goes on to call
 `waitForCompletion`.
@@ -296,6 +386,10 @@ frame load state instead of individual requests).
 
 ### `mutating`
 
+(`packages/playwright-core/src/tools/backend/browserBackend.ts`, the
+`mutating:` line in the `traceLog?.appendRecord({...})` call inside
+`callTool`.)
+
 ```ts
 mutating: telemetry.network.some(n => !SAFE_METHODS.has(n.method.toUpperCase()))
 // SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
@@ -307,18 +401,64 @@ comparison; the method as received on the wire is stored unmodified in the
 `network` entry, only the comparison is case-normalized). A call with empty
 `network` is never `mutating`.
 
+**`mutating: false` means "no non-safe request was observed in this
+action's window," not "this action had no side effects."** `mutating` is
+derived entirely from the `network` array, and `network` is itself only
+populated for calls that go through `Tab.waitForCompletion` (see `network`
+and `waits`, above) — a tool that mutates the page without ever making an
+HTTP request that this backend observes will report `mutating: false`
+regardless of what it actually did to the page. Two ways this shows up in
+practice:
+
+- **Structurally blind tools.** `browser_fill_form`, `browser_hover`, and
+  `browser_select_option` never call `Tab.waitForCompletion` at all (see
+  above); a plain `browser_type` call with no `submit`/`slowly` doesn't
+  either. `browser_navigate` (`packages/playwright-core/src/tools/backend/
+  navigate.ts`) is the same story by a different path: it drives the
+  navigation directly (`tab.checkUrlAndNavigate` → `page.goto`) and never
+  goes through `waitForCompletion` either, at all, regardless of what the
+  navigation loads. Every call to any of these five records `mutating:
+  false` unconditionally, even when the underlying action changed page
+  state or issued a POST (a filled form field, a toggled checkbox, a
+  changed select value, a navigation to a URL that itself triggers
+  server-side writes) — there is no network signal to derive `mutating`
+  from in the first place, because `network` itself is empty for these
+  tools by construction, not by observation.
+- **Popup / second-tab blind spot.** `network` is scoped to telemetry
+  captured for the dispatched call's own action window on the tab it
+  operated on. A click that opens a new tab (`target="_blank"`, `window.
+  open`) and the *new* tab's own subsequent navigation/requests are not
+  attributed back to the click's trace record — the click's `network`
+  reflects only what happened on the original tab before/during its own
+  settle window.
+
+**A consent gate (or any policy decision about whether an action is safe
+to allow) must not trust `mutating: false` alone for the tools listed
+above.** Treat `browser_fill_form`, `browser_type` (unconditionally, not
+just when `submit`/`slowly` is unset — the trace record alone doesn't tell
+a reader which branch a given call took without also checking `params`),
+`browser_hover`, `browser_select_option`, and `browser_navigate` as
+mutating-by-tool-identity, independent of what their trace record's
+`mutating` field says. This is a deliberate, already-ruled scope
+boundary, not an oversight to fix here: wrapping `fill_form` in
+`waitForCompletion` to give it real network telemetry would add settle
+latency to every field fill, and is out of scope for WS1.
+
 ### `code`
 
 The generated Playwright API code lines the tool's `Response` object
-collected while handling the call (`response.code()`), if any. `undefined`
-for tools that never call `response.addCode(...)`.
+collected while handling the call (`response.code()`). Always an array,
+`[]` minimum — `Response._code` initializes to `[]`
+(`packages/playwright-core/src/tools/backend/response.ts`) and `code()`
+returns it directly, so this field is never `undefined`; `[]` means the
+tool never called `response.addCode(...)`, not that the field is absent.
 
 ### `script` — `browser_run_code_unsafe` only
 
 `undefined` for every tool except `browser_run_code_unsafe`.
 
 ```ts
-script?: { filename?: string, sha256: string, args?: unknown, actions: TraceScriptAction[] }
+script?: { filename?: string, sha256: string, args?: unknown, actions: (TraceScriptAction | TraceTruncationMarker)[] }
 ```
 
 - `sha256` is a SHA-256 hash of the **final code string that actually ran**
@@ -348,6 +488,18 @@ script?: { filename?: string, sha256: string, args?: unknown, actions: TraceScri
   empty `actions` array — treat the script as opaque** (verifiable only via
   `sha256`/`args`/`network`/`code`/the tool's own response) whenever
   `actions` is empty.
+  - Independently of contamination, `actions` is capped at 10,000 captured
+    entries in memory as they're observed
+    (`scriptCapture.ts`'s `MAX_CAPTURED_ACTIONS`), to bound a single
+    long-running script's memory footprint. Once the cap is hit, further
+    API calls are counted but not retained; a capped, non-contaminated
+    capture ends with a trailing `TraceTruncationMarker` (`{ __truncated__:
+    true, omittedElements, sizeBytes }`) summarizing what was dropped,
+    exactly like an oversized `network`/`targets`/`code` array (see
+    **Truncation**, below) — `omittedElements` is the count of API calls
+    past the cap; `sizeBytes` is the serialized size of the 10,000 kept
+    entries, not of the omitted tail (which was never retained, so has no
+    honest size to report).
 
 ### `error`
 
@@ -360,12 +512,49 @@ call threw, or extracted from the response's error text otherwise.
 
 Any individual `TraceRecord` **value** — not the record as a whole — whose
 JSON-serialized size (`Buffer.byteLength` of `JSON.stringify(value)`)
-exceeds 64 KiB (`MAX_VALUE_BYTES = 64 * 1024`) is replaced by a marker
-before the record is written:
+exceeds 64 KiB (`MAX_VALUE_BYTES = 64 * 1024`) is truncated before the
+record is written. What "truncated" means depends on whether the
+oversized value is an **array** or not — this split exists specifically so
+oversized array fields (`network`, `targets`, `code`, `script.actions`)
+never stop being arrays:
 
-```json
-{ "__truncated__": true, "sizeBytes": 123456 }
-```
+- **Arrays keep their type.** An oversized array is walked element-wise
+  and truncated to a prefix that fits the budget, then gets exactly one
+  `TraceTruncationMarker` appended as its final element:
+
+  ```json
+  { "__truncated__": true, "omittedElements": 12, "sizeBytes": 123456 }
+  ```
+
+  `omittedElements` is how many elements past the kept prefix were
+  dropped; `sizeBytes` is the full array's serialized size *before*
+  trimming (not the trimmed/kept portion's size, and not the marker's own
+  size). Elements are always dropped from the **end** — the kept portion
+  is always a prefix of the original array, so ordering-sensitive readers
+  (e.g. `network`/`code` entries in call order, `script.actions` in
+  execution order) can rely on "everything before the marker is in its
+  original relative order, and there is nothing meaningful after it."
+  Emitted by `truncateArrayIfOversized()` in `traceLog.ts`. A reader
+  should treat the **last** element of any of these four fields as a
+  possible marker and check it structurally (`__truncated__ === true` and
+  `typeof omittedElements === 'number'`) rather than assuming array length
+  alone means nothing was dropped.
+- **Non-array containers still collapse to a bare marker.** An oversized
+  *object* value (not an array) — e.g. `script` as a whole, or a subtree
+  inside `script.args` — is replaced wholesale by:
+
+  ```json
+  { "__truncated__": true, "sizeBytes": 123456 }
+  ```
+
+  This marker has no `omittedElements` key — that is precisely how a
+  reader tells the two marker shapes apart (see below). Unlike the array
+  case, there is no "keep a prefix" concept for an arbitrary object: the
+  whole value is gone, replaced by this one marker.
+- **A long string value also collapses to the object-shaped marker**
+  (`{ "__truncated__": true, "sizeBytes": ... }`) when it alone exceeds 64
+  KiB — e.g. `error`, `urlBefore`/`urlAfter`, or a string leaf somewhere
+  inside `params`/`script.args`.
 
 Key semantics, all load-bearing for anything reading `actions.jsonl`:
 
@@ -375,42 +564,62 @@ Key semantics, all load-bearing for anything reading `actions.jsonl`:
   its own. A record with several individually-small fields whose
   *aggregate* size exceeds 64 KiB is written intact — nothing about the
   record as a whole is ever collapsed, checked, or acted on as a unit.
-- **The top-level record never collapses, and the identity core always
-  survives.** There is no code path that treats the whole `TraceRecord` as
-  a truncatable leaf. `v`, `seq`, `tool`, `startedAt`, `endedAt`, and
-  `mutating` are unconditionally present and correct on every written line,
-  regardless of how oversized any other field is.
+- **The top-level record never collapses to a bare marker.** There is no
+  code path that treats the whole `TraceRecord` as a truncatable leaf —
+  `appendRecord()` (`traceLog.ts`) always writes an object with every
+  `TraceRecord` key present, walking each field independently rather than
+  handing the whole record to the truncation walk in one call.
+- **`v`, `seq`, and `mutating` are structurally exempt from truncation, not
+  just practically small.** They are a number/number/boolean, and
+  `truncateOversizedValues()`'s size check only ever runs on strings and
+  objects/arrays (`typeof value !== 'object' && typeof value !== 'string'`
+  returns the value untouched) — there is no code path under which a
+  number or boolean gets replaced by a marker, regardless of value.
+- **`tool`, `startedAt`, and `endedAt` are practically always small, but
+  are not structurally exempt the way `v`/`seq`/`mutating` are.** They are
+  ordinary strings, and every string value — these three included — goes
+  through the same per-field size check as `error`/`urlBefore`/`urlAfter`.
+  In practice a tool name and an `Date.toISOString()` timestamp are always
+  many orders of magnitude under 64 KiB, so this never fires for them, but
+  that is a fact about their real-world content, not a special-case in the
+  code that protects them by name. Do not build a reader that assumes
+  these three keys can never be `{ __truncated__: true, sizeBytes }` —
+  build one that (like every other string field) checks the value's type
+  before treating it as a plain string.
 - **The walk is bottom-up and per-field**, so truncation can apply to a
   *subtree* inside a field (e.g. `script.args.someHugeKey`) without
-  discarding the rest of that field's sibling keys. When a subtree
-  collapses, `sizeBytes` is the size of that subtree's JSON **after its own
-  children have already been truncated** (post-child-truncation size), not
-  its original pre-truncation size — a container that only became small
-  enough to report accurately because a child inside it was already
-  replaced by a marker still reports the size it actually serializes to
-  now, not a number for data that's no longer there.
-- **`urlBefore`, `urlAfter`, and `error` are ordinary string fields and can
-  each individually truncate** if a single one of them happens to exceed 64
-  KiB on its own (e.g. an enormous error message). This is a narrower
-  guarantee than the identity-core fields above, and is deliberate — these
-  three are useful-but-not-identity fields, unlike `v`/`seq`/`tool`/the
-  timestamps/`mutating`.
-- **The cycle marker omits `sizeBytes`**: `{ "__truncated__": true }` with
-  no `sizeBytes` key. This only fires for an object the walk has already
-  visited as one of its own ancestors — expected to be unreachable in
-  practice, since every traced value is JSON-derived (parsed tool
-  arguments, telemetry the backend built itself) and none of the code
+  discarding the rest of that field's sibling keys, and an array nested
+  inside an object field (e.g. `script.args.items`, if the caller's own
+  `args` happens to contain an array) gets the same array-keeps-its-type
+  treatment as a top-level array field — this rule is about the *value*
+  being truncated, not about field position. When a subtree collapses,
+  `sizeBytes` is the size of that subtree's JSON **after its own children
+  have already been truncated** (post-child-truncation size), not its
+  original pre-truncation size — a container that only became small enough
+  to report accurately because a child inside it was already replaced by a
+  marker still reports the size it actually serializes to now, not a
+  number for data that's no longer there. The same applies to an
+  oversized array's `sizeBytes`: it is the post-walk (children already
+  truncated) size of the full array before trimming.
+- **The cycle marker omits both `sizeBytes` and `omittedElements`**:
+  `{ "__truncated__": true }` alone. This only fires for an object the walk
+  has already visited as one of its own ancestors — expected to be
+  unreachable in practice, since every traced value is JSON-derived (parsed
+  tool arguments, telemetry the backend built itself) and none of the code
   paths that produce trace data intentionally construct cycles. Treat its
   appearance as a signal something upstream is producing non-JSON-shaped
   data, not as a normal truncation case.
 
 A reader can distinguish "this value was truncated" from "this value is
 legitimately `{ __truncated__: true, ... }`-shaped application data" only
-by the field's expected type in the schema above — the marker shape is not
-namespaced or otherwise unambiguous on its own. In practice no field in
-`TraceRecord` legitimately contains user data shaped exactly like the
+by the field's expected type in the schema above — the marker shapes are
+not namespaced or otherwise unambiguous on their own. In practice no field
+in `TraceRecord` legitimately contains user data shaped exactly like either
 marker, but a defensive reader should check the field's expected type
-before treating a truncation-shaped object as a truncation marker.
+before treating a truncation-shaped object as a truncation marker, and
+(for the array-element marker specifically) check for `omittedElements` to
+tell it apart from the object-collapse marker rather than assuming
+`__truncated__: true` alone identifies which shape it's looking at.
 
 ## Privacy — traces are local-only and raw by design
 
@@ -431,9 +640,14 @@ machine. Do not assume any field here has been sanitized.
 
 ## Versioning
 
-This is trace schema **1**. It is independent of the Fast Browser
-extension protocol version (currently 2, unrelated to trace capture) and
-the Fast Browser product release schema (see `COMPATIBILITY.md`). A future
-incompatible change to this format must bump `meta.json`'s `schemaVersion`
-and every `TraceRecord.v` accordingly, and should be documented as a new
+This is trace schema **1**, exported as `TRACE_SCHEMA_VERSION` from
+`traceLog.ts` and used for both `meta.json`'s `schemaVersion` and every
+`TraceRecord.v` — the two are read from the same constant, not
+independently maintained literals. It is independent of the Fast Browser
+extension protocol version (currently 2, unrelated to trace capture,
+reported in `meta.json` as `protocolVersion`), the Fast Browser product
+version (`meta.json`'s `productVersion`), and the Fast Browser product
+release schema (see `COMPATIBILITY.md`). A future incompatible change to
+this format must bump `TRACE_SCHEMA_VERSION` (which moves `schemaVersion`
+and every record's `v` together), and should be documented as a new
 section here rather than by editing the semantics of schema 1 in place.
