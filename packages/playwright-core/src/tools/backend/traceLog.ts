@@ -87,12 +87,20 @@ function safeSerializedByteLength(value: unknown): number | undefined {
   }
 }
 
-// Deep-walks a record value bottom-up, replacing any string leaf -- or any
-// object/array whose serialized size is still too large after its own
-// children have been walked -- with `{ __truncated__: true, sizeBytes }`.
-// Bottom-up (rather than checking each container's size before recursing)
-// is what lets one oversized leaf (e.g. `script.args.big`) get replaced in
-// place instead of the whole enclosing object being discarded.
+// Deep-walks a single record FIELD's value bottom-up, replacing any string
+// leaf -- or any object/array whose serialized size is still too large after
+// its own children have been walked -- with `{ __truncated__: true,
+// sizeBytes }`. Bottom-up (rather than checking each container's size before
+// recursing) is what lets one oversized leaf (e.g. `script.args.big`) get
+// replaced in place instead of the whole enclosing object being discarded.
+//
+// Deliberately never called on the whole TraceRecord at once (see
+// appendRecord below): the 64 KB rule is scoped to "any single record
+// value," not to the record's aggregate size, so appendRecord invokes this
+// once per top-level field instead of once on `record` as a unit. That keeps
+// identity fields (v, seq, tool, timestamps, urls, mutating, error) safe by
+// construction -- there is no code path where the record itself is treated
+// as a collapsible leaf -- rather than by special-casing their key names.
 //
 // `ancestors` guards against cycles: values are JSON-derived (parsed tool
 // arguments, telemetry we built ourselves) so a cycle should never occur,
@@ -107,8 +115,12 @@ function truncateOversizedValues(value: unknown, ancestors: Set<object> = new Se
   }
   if (value === null || typeof value !== 'object')
     return value;
+  // A cycle has no honest sizeBytes to report without re-serializing (which
+  // is exactly what would throw), so the field is omitted rather than
+  // fabricated -- values are JSON-derived and shouldn't cycle in practice,
+  // this is cheap insurance, not a path expected to fire.
   if (ancestors.has(value))
-    return { __truncated__: true, sizeBytes: 0 };
+    return { __truncated__: true };
 
   ancestors.add(value);
   const walked: unknown = Array.isArray(value)
@@ -126,6 +138,7 @@ export class TraceLog {
   readonly folder: string;
   private _actionsFile: string;
   private _seq = 0;
+  private _closed = false;
 
   static async create(config: ContextConfig, cwd: string, info: { clientName: string, runtimeVersion: string }): Promise<TraceLog> {
     const folder = await outputFile({ config, cwd }, `trace-${Date.now()}`, { origin: 'code' });
@@ -155,11 +168,26 @@ export class TraceLog {
   // is no internal buffering to lose on a hard kill: the line is durable the
   // moment this call returns.
   appendRecord(record: TraceRecord): void {
-    const safeRecord = truncateOversizedValues(record);
+    // Walk each top-level field independently rather than handing the whole
+    // record to truncateOversizedValues in one call. The 64 KB rule is about
+    // any single VALUE inside a record, never the record itself: a busy
+    // action can easily have several individually-small fields (many small
+    // network entries, a long code[] array, ...) that only look oversized in
+    // aggregate, and the record's identity fields (v, seq, tool, timestamps,
+    // urls, mutating, error) must survive regardless. Walking field-by-field
+    // means the whole-record aggregate size is never computed or acted on --
+    // only a genuinely oversized individual field can ever collapse, and it
+    // collapses alone, leaving its siblings (and the record shape) intact.
+    const safeRecord: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(record))
+      safeRecord[key] = truncateOversizedValues(value);
     fs.appendFileSync(this._actionsFile, JSON.stringify(safeRecord) + '\n');
   }
 
   async close(): Promise<void> {
+    if (this._closed)
+      return;
+    this._closed = true;
     const metaPath = path.join(this.folder, 'meta.json');
     const meta = JSON.parse(await fs.promises.readFile(metaPath, 'utf-8'));
     meta.endedAt = new Date().toISOString();

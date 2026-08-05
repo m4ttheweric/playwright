@@ -272,6 +272,33 @@ test('oversized param values are truncated in the record', async ({ startClient,
   expect(rec.script.args.big.sizeBytes).toBe(100 * 1024);
 });
 
+test('a record with individually-small fields whose aggregate exceeds 64 KB survives intact', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  // Individually well under the 64 KB truncation threshold on its own, but
+  // this value lands in the record twice: once as record.params.args (the
+  // raw call args) and once as record.script.args (Task 6: script.args
+  // mirrors the raw args). Two ~40 KB copies push the record's aggregate
+  // serialized size past 64 KB even though neither field alone does.
+  // Regression coverage for the top-level container-collapse bug: the whole
+  // record must never be replaced wholesale just because its total size is
+  // large -- only a genuinely oversized individual value may be marked, and
+  // nothing here is individually oversized.
+  const notQuiteBig = 'y'.repeat(40 * 1024);
+  await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async (page, args) => args.notQuiteBig.length`, args: { notQuiteBig } } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const rec = lines.find(l => l.tool === 'browser_run_code_unsafe');
+  expect(Buffer.byteLength(JSON.stringify(rec))).toBeGreaterThan(64 * 1024);
+  expect(rec.seq).toBe(2);
+  expect(rec.tool).toBe('browser_run_code_unsafe');
+  expect(typeof rec.startedAt).toBe('string');
+  expect(typeof rec.endedAt).toBe('string');
+  expect(rec.params.args.notQuiteBig).toBe(notQuiteBig);
+  expect(rec.script.args.notQuiteBig).toBe(notQuiteBig);
+});
+
 test('meta.json gains endedAt when the client disconnects cleanly', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
