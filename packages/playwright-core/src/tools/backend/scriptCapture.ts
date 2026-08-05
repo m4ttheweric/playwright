@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { TraceScriptAction } from './traceLog';
+import type { TraceScriptAction, TraceTruncationMarker } from './traceLog';
 
 // browser_run_code_unsafe (runCode.ts) captures Playwright API actions via a
 // ClientInstrumentation listener on `tab.page._instrumentation`. That object
@@ -53,12 +53,24 @@ import type { TraceScriptAction } from './traceLog';
 export type ScriptCapture = {
   actions: TraceScriptAction[];
   contaminated: boolean;
+  // Count of onApiCallBegin events observed after `actions` hit
+  // MAX_CAPTURED_ACTIONS. Tracked separately from actions.length so
+  // endScriptCapture can report an honest omittedElements count without
+  // having reserved (and then discarded) the entries themselves.
+  omitted: number;
 };
+
+// A script that drives a tight loop of Playwright API calls (e.g. clicking
+// through a few thousand rows) can otherwise grow `actions` unboundedly for
+// as long as the run_code call is in flight -- this caps the in-memory
+// array itself, independently of (and ahead of) the write-time 64 KB
+// truncation in traceLog.ts, which only ever sees the already-capped array.
+export const MAX_CAPTURED_ACTIONS = 10_000;
 
 const activeCaptures = new Set<ScriptCapture>();
 
 export function beginScriptCapture(): ScriptCapture {
-  const capture: ScriptCapture = { actions: [], contaminated: activeCaptures.size > 0 };
+  const capture: ScriptCapture = { actions: [], contaminated: activeCaptures.size > 0, omitted: 0 };
   if (capture.contaminated) {
     for (const other of activeCaptures)
       other.contaminated = true;
@@ -67,7 +79,30 @@ export function beginScriptCapture(): ScriptCapture {
   return capture;
 }
 
-export function endScriptCapture(capture: ScriptCapture): TraceScriptAction[] {
+// Called from runCode.ts's onApiCallBegin listener for every observed API
+// call. Once the cap is hit, further calls are counted but not retained.
+export function recordCapturedAction(capture: ScriptCapture, action: TraceScriptAction): void {
+  if (capture.actions.length >= MAX_CAPTURED_ACTIONS) {
+    capture.omitted++;
+    return;
+  }
+  capture.actions.push(action);
+}
+
+export function endScriptCapture(capture: ScriptCapture): (TraceScriptAction | TraceTruncationMarker)[] {
   activeCaptures.delete(capture);
-  return capture.contaminated ? [] : capture.actions;
+  if (capture.contaminated)
+    return [];
+  if (capture.omitted === 0)
+    return capture.actions;
+  // sizeBytes reports the size of what was actually kept (the capped
+  // actions array), not a hypothetical uncapped size -- computing the real
+  // size of the omitted tail would mean having retained it, which is
+  // exactly what the cap avoids.
+  const marker: TraceTruncationMarker = {
+    __truncated__: true,
+    omittedElements: capture.omitted,
+    sizeBytes: Buffer.byteLength(JSON.stringify(capture.actions)),
+  };
+  return [...capture.actions, marker];
 }

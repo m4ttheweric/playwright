@@ -27,14 +27,29 @@ export async function waitForCompletion<R>(tab: Tab, callback: () => Promise<R>)
   const epoch = tab.context.currentActionEpoch();
   const requests: playwright.Request[] = [];
   const network: TraceNetworkEntry[] = [];
+  // Hoisted once per call, not read fresh per request: whether tracing is
+  // active can't change mid-action, and this keeps the gate below a single
+  // property read instead of one per request event.
+  const tracingEnabled = !!tab.context.traceLog;
 
   const requestListener = (request: playwright.Request) => {
     requests.push(request);
+    // Telemetry-only bookkeeping, gated on tracing being enabled (CRITICAL 1
+    // in the WS1 trace-capture fix wave): `requests.push` above stays
+    // unconditional because it feeds the non-telemetry await logic below
+    // (requestedNavigation / awaitedRequests), which must behave identically
+    // whether or not a trace is being written. Everything from here down --
+    // including the `request.response()` protocol round trip -- exists only
+    // to populate `network`, which a dropped trace record will never read.
+    if (!tracingEnabled)
+      return;
     const entry: TraceNetworkEntry = { method: request.method(), url: request.url(), resourceType: request.resourceType() };
     network.push(entry);
     request.response().then(response => {
       if (response)
         entry.status = response.status();
+      else
+        entry.failed = true;
     }).catch(() => {
       entry.failed = true;
     });

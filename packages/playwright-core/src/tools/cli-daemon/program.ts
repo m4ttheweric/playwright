@@ -26,9 +26,11 @@ import { startCliDaemonServer } from './daemon';
 import { setupExitWatchdog } from '../mcp/watchdog';
 import { createBrowserWithInfo } from '../mcp/browserFactory';
 import * as configUtils from '../mcp/config';
+import { VERSION as PROTOCOL_VERSION } from '../mcp/protocol';
 import { createClientInfo } from '../cli-client/registry';
 import { installSkills } from '../utils/installSkills';
 import { registry as browserRegistry } from '../../server/registry/index';
+import { packageJSON } from '../../package';
 import type { Command } from 'commander';
 
 export function decorateProgram(program: Command) {
@@ -74,7 +76,13 @@ export function decorateProgram(program: Command) {
           if (!browserContext)
             throw new Error('Error: unable to connect to a browser that does not have any contexts');
           const persistent = options.persistent || options.profile || mcpConfig.browser.userDataDir ? true : undefined;
-          const socketPath = await startCliDaemonServer(sessionName, browserContext, browserInfo, mcpConfig, clientInfo, mcpClientInfo, { persistent, exitOnClose: true, ownership });
+          // productVersion/protocolVersion are ContextConfig-only fields (see
+          // context.ts); threaded in here rather than added to mcpConfig's own
+          // FullConfig type, which is also used above for browser.isolated/
+          // userDataDir and shouldn't grow fields that only matter to trace
+          // capture.
+          const daemonConfig = { ...mcpConfig, productVersion: packageJSON.version, protocolVersion: PROTOCOL_VERSION };
+          const socketPath = await startCliDaemonServer(sessionName, browserContext, browserInfo, daemonConfig, clientInfo, mcpClientInfo, { persistent, exitOnClose: true, ownership });
           console.log(`Daemon listening on ${socketPath}\n`);
         } catch (error) {
           console.log(error);

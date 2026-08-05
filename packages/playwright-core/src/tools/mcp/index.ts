@@ -20,6 +20,7 @@ import { createBrowserWithInfo, videoRecordingOptions } from './browserFactory';
 import { BrowserBackend } from '../backend/browserBackend';
 import { createServer } from '../utils/mcp/server';
 import { packageJSON } from '../../package';
+import { VERSION as PROTOCOL_VERSION } from './protocol';
 
 import type { BrowserContext } from 'playwright';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -39,7 +40,7 @@ export async function createConnection(userConfig: Config = {}, contextGetter?: 
         ? new SimpleBrowser(await contextGetter())
         : (await createBrowserWithInfo(config, clientInfo, {})).browser;
       const context = config.browser.isolated ? await browser.newContext({ ...config.browser.contextOptions, ...videoRecordingOptions(config, clientInfo) }) : browser.contexts()[0];
-      return new BrowserBackend(config, context, tools);
+      return new BrowserBackend({ ...config, productVersion: packageJSON.version, protocolVersion: PROTOCOL_VERSION }, context, tools);
     },
     disposed: async () => { }
   };

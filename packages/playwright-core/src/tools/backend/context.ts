@@ -49,6 +49,14 @@ export type ContextConfig = {
   outputMaxSize?: number;
   saveSession?: boolean;
   saveTrace?: boolean;
+  // Not CLI-settable: threaded in by the caller that constructs BrowserBackend
+  // (mcp/program.ts and friends) from data those callers already have --
+  // mcp/program.ts's `serverVersion` and mcp/protocol.ts's `VERSION` -- and
+  // read back out in TraceLog.create() to populate meta.json. Exist on
+  // ContextConfig rather than being imported directly into traceLog.ts
+  // because backend/ cannot import from mcp/ (see DEPS.list).
+  productVersion?: string;
+  protocolVersion?: number;
   secrets?: Record<string, string>;
   snapshot?: {
     mode?: 'full' | 'none';
@@ -117,7 +125,7 @@ type VideoParams = { size?: { width: number; height: number } };
 // those, and takeActionTelemetry() below falls back to empty/zeroed values.
 export type ActionNetworkTelemetry = {
   network: TraceNetworkEntry[];
-  waits: { settleMs: number, awaitedNavigation: boolean, awaitedRequests: number };
+  waits: TraceRecord['waits'];
 };
 
 // Everything the dispatch seam in BrowserBackend.callTool needs to fill in a

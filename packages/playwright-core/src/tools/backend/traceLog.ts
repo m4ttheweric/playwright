@@ -51,8 +51,27 @@ export function traceLocatorKind(candidate: string): TraceLocator['kind'] {
 
 export type TraceNetworkEntry = { method: string, url: string, resourceType: string, status?: number, failed?: boolean };
 export type TraceScriptAction = { apiName: string, params?: unknown, error?: string };
+
+// Appended as the final element of a truncated array field in place of
+// collapsing the whole array to a bare marker object (see
+// truncateArrayIfOversized below) -- this is what lets `network`, `targets`,
+// `code`, and `script.actions` keep their declared array type even when
+// oversized, which is load-bearing for WS2 (the downstream compiler reads
+// these fields expecting an array, never a bare object). `omittedElements`
+// counts entries dropped from the END of the array (kept elements are always
+// a prefix); `sizeBytes` is the post-walk serialized size of the FULL array
+// before trimming, not of the marker or the kept prefix.
+export type TraceTruncationMarker = { __truncated__: true, omittedElements: number, sizeBytes: number };
+
+// This trace format's schema version. Used for both meta.json's
+// `schemaVersion` and every record's `v` -- the two are the same number by
+// design (meta.json's own comment on this documents why: a record is
+// self-describing even read out of context of its meta.json). Bump this,
+// not the two call sites, when the schema changes.
+export const TRACE_SCHEMA_VERSION = 1;
+
 export type TraceRecord = {
-  v: 1,
+  v: typeof TRACE_SCHEMA_VERSION,
   seq: number,
   tool: string,
   startedAt: string,       // ISO-8601
@@ -60,12 +79,12 @@ export type TraceRecord = {
   params: unknown,         // parsed tool arguments, raw (trace is local-only)
   urlBefore?: string,
   urlAfter?: string,
-  targets: TraceTarget[],
-  network: TraceNetworkEntry[],
+  targets: (TraceTarget | TraceTruncationMarker)[],
+  network: (TraceNetworkEntry | TraceTruncationMarker)[],
   mutating: boolean,       // any non-GET/HEAD/OPTIONS request in the action window
   waits: { settleMs: number, awaitedNavigation: boolean, awaitedRequests: number },
-  code?: string[],         // generated Playwright code lines the Response collected
-  script?: { filename?: string, sha256: string, args?: unknown, actions: TraceScriptAction[] },
+  code: (string | TraceTruncationMarker)[], // generated Playwright code lines the Response collected; [] minimum, never absent
+  script?: { filename?: string, sha256: string, args?: unknown, actions: (TraceScriptAction | TraceTruncationMarker)[] },
   error?: string,
 };
 
@@ -128,10 +147,59 @@ function truncateOversizedValues(value: unknown, ancestors: Set<object> = new Se
     : Object.fromEntries(Object.entries(value).map(([k, v]) => [k, truncateOversizedValues(v, ancestors)]));
   ancestors.delete(value);
 
+  // Arrays never collapse to a bare marker object -- that would break the
+  // declared array type of every array-shaped TraceRecord field (`network`,
+  // `targets`, `code`, `script.actions`), which WS2 codes against expecting
+  // an array, never an object. Object (non-array) containers keep the
+  // original collapse-to-marker behavior below.
+  if (Array.isArray(walked))
+    return truncateArrayIfOversized(walked);
+
   const size = safeSerializedByteLength(walked);
   if (size !== undefined && size > MAX_VALUE_BYTES)
     return { __truncated__: true, sizeBytes: size };
   return walked;
+}
+
+// Reserved headroom subtracted from the byte budget so the trailing marker
+// itself (plus the array's own `[`/`]`/comma punctuation) never pushes the
+// final serialized array back over MAX_VALUE_BYTES. The marker serializes to
+// well under 100 bytes for any realistic omittedElements/sizeBytes value;
+// this is a generous, cheap-to-reason-about margin, not a tight fit.
+const MARKER_RESERVE_BYTES = 128;
+
+// Keeps the array's declared type intact even when oversized: walks the
+// (already element-wise-truncated) array once, in order, accumulating a
+// running byte total until the next element would exceed the budget, then
+// appends one TraceTruncationMarker summarizing everything past that point.
+// Single pass over precomputed per-element sizes -- deliberately not
+// re-serializing the growing kept-so-far array on each iteration, which
+// would make this O(n^2) for large arrays (e.g. a run_code script's capped
+// but still up-to-10,000-element `actions` array).
+function truncateArrayIfOversized(walked: unknown[]): unknown[] {
+  const fullSize = safeSerializedByteLength(walked);
+  if (fullSize === undefined || fullSize <= MAX_VALUE_BYTES)
+    return walked;
+
+  const budget = MAX_VALUE_BYTES - MARKER_RESERVE_BYTES;
+  const kept: unknown[] = [];
+  let runningBytes = 2; // '[' + ']'
+  for (const item of walked) {
+    const itemBytes = safeSerializedByteLength(item);
+    if (itemBytes === undefined)
+      break; // can't safely size this element (e.g. a surviving cycle guard); stop keeping here.
+    const additional = itemBytes + (kept.length > 0 ? 1 : 0); // +1 for the separating comma
+    if (runningBytes + additional > budget)
+      break;
+    runningBytes += additional;
+    kept.push(item);
+  }
+
+  const omittedElements = walked.length - kept.length;
+  if (omittedElements === 0)
+    return kept;
+  const marker: TraceTruncationMarker = { __truncated__: true, omittedElements, sizeBytes: fullSize };
+  return [...kept, marker];
 }
 
 export class TraceLog {
@@ -140,15 +208,21 @@ export class TraceLog {
   private _seq = 0;
   private _closed = false;
 
-  static async create(config: ContextConfig, cwd: string, info: { clientName: string, runtimeVersion: string }): Promise<TraceLog> {
+  // `productVersion`/`protocolVersion` are threaded in as plain data rather
+  // than imported: this backend cannot import from `src/tools/mcp/` (see
+  // DEPS.list), which is where the real product version (mcp/program.ts's
+  // `serverVersion`) and the real `VERSION` (mcp/protocol.ts) live. Callers
+  // outside backend/ read those and pass them down here.
+  static async create(config: ContextConfig, cwd: string, info: { clientName: string, runtimeVersion: string, productVersion?: string, protocolVersion?: number }): Promise<TraceLog> {
     const folder = await outputFile({ config, cwd }, `trace-${Date.now()}`, { origin: 'code' });
     await fs.promises.mkdir(folder, { recursive: true });
     await fs.promises.writeFile(path.join(folder, 'meta.json'), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: TRACE_SCHEMA_VERSION,
       clientName: info.clientName,
       cwd,
       runtimeVersion: info.runtimeVersion,
-      protocolVersion: 2,
+      productVersion: info.productVersion,
+      protocolVersion: info.protocolVersion,
       startedAt: new Date().toISOString(),
     }, null, 2));
     return new TraceLog(folder);

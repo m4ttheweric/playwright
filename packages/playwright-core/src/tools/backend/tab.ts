@@ -37,6 +37,12 @@ const TabEvents = {
   modalState: 'modalState'
 };
 
+// Matches an aria-ref target (`e12`, `f3e12`) as opposed to a selector
+// string. Shared by targetLocators (deciding how to resolve a target) and
+// _recordTarget (deciding whether to populate TraceTarget.ref) so the two
+// can never drift out of sync on what counts as a ref.
+const ARIA_REF_PATTERN = /^(f\d+)?e\d+$/;
+
 type TabEventsInterface = {
   [TabEvents.modalState]: [modalState: ModalState];
 };
@@ -480,8 +486,11 @@ export class Tab extends EventEmitter<TabEventsInterface> {
   // `options.trace` is opt-in, not implied by "goes through targetLocators":
   // most callers (browser_snapshot's optional target, browser_check,
   // verify.ts, evaluate.ts, ...) resolve locators for their own purposes and
-  // must keep recording empty targets. Only the ref-based action tools
-  // (click, type, hover, select_option, drag) pass `trace: true`.
+  // must keep recording empty targets. Only the seven ref-based action tools
+  // (click, type, hover, select_option, drag, fill_form, drop) pass
+  // `trace: true` -- and even then, enrichment only actually runs when a
+  // trace is active (see the traceLog check below): the flag alone is not
+  // enough to trigger the _selectorCandidates() channel round trip.
   async targetLocators(params: { element?: string, target: string }[], options?: { trace?: boolean }): Promise<{ locator: playwright.Locator, resolved: string }[]> {
     await this._initializedPromise;
     // Captured up front, before resolution, same as waitForCompletion's own
@@ -489,7 +498,7 @@ export class Tab extends EventEmitter<TabEventsInterface> {
     // dispatch could have already bumped the epoch.
     const epoch = this.context.currentActionEpoch();
     const results = await Promise.all(params.map(async param => {
-      if (!param.target.match(/^(f\d+)?e\d+$/)) {
+      if (!param.target.match(ARIA_REF_PATTERN)) {
         const selector = locatorOrSelectorAsSelector('javascript', param.target, this.context.config.testIdAttribute || 'data-testid');
         const handle = await this.page.$(selector);
         if (!handle)
@@ -508,7 +517,12 @@ export class Tab extends EventEmitter<TabEventsInterface> {
         }
       }
     }));
-    if (options?.trace)
+    // Gated on traceLog, not just the caller's opt-in: without an active
+    // trace, a written record (and thus this enrichment) can never happen,
+    // so running _recordTarget would just be an unconditional
+    // _selectorCandidates() channel round trip for a target nobody will
+    // ever read. See CRITICAL 1 in the WS1 trace-capture fix wave.
+    if (options?.trace && this.context.traceLog)
       await Promise.all(params.map((param, i) => this._recordTarget(epoch, param, results[i])));
     return results;
   }
@@ -520,7 +534,7 @@ export class Tab extends EventEmitter<TabEventsInterface> {
   // rather than losing the whole action's trace record.
   private async _recordTarget(epoch: number, param: { element?: string, target: string }, result: { locator: playwright.Locator, resolved: string }) {
     const target: TraceTarget = {
-      ref: param.target.match(/^(f\d+)?e\d+$/) ? param.target : undefined,
+      ref: param.target.match(ARIA_REF_PATTERN) ? param.target : undefined,
       resolved: result.resolved,
       alternates: [],
     };

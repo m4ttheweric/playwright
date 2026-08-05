@@ -22,7 +22,7 @@ import * as z from 'zod';
 import { ManualPromise } from '@isomorphic/manualPromise';
 
 import { defineTabTool } from './tool';
-import { beginScriptCapture, endScriptCapture } from './scriptCapture';
+import { beginScriptCapture, endScriptCapture, recordCapturedAction } from './scriptCapture';
 
 import type { ScriptCapture } from './scriptCapture';
 
@@ -66,6 +66,12 @@ const runCode = defineTabTool({
     // capture in utils.ts: setScriptTelemetry below must tag its write with
     // the epoch this call actually started under.
     const epoch = tab.context.currentActionEpoch();
+    // Gated on tracing being enabled (CRITICAL 1 in the WS1 trace-capture fix
+    // wave): without an active trace, no record will ever be written, so
+    // beginScriptCapture()/addListener below would just be registering a
+    // process-wide instrumentation listener (and consuming a slot in
+    // scriptCapture.ts's contamination tracking) for data nobody will read.
+    const tracingEnabled = !!tab.context.traceLog;
     // `tab.page` is typed against the public API (index.d.ts), which does not
     // expose `_instrumentation` -- it is an internal field on ChannelOwner
     // (see client/channelOwner.ts) shared process-wide, not per-page or
@@ -88,7 +94,8 @@ const runCode = defineTabTool({
         // closure and may still be undefined for the brief window before the
         // try below assigns it, hence the optional chain.
         try {
-          capture?.actions.push({ apiName: apiCall.apiName, params: channel.params });
+          if (capture)
+            recordCapturedAction(capture, { apiName: apiCall.apiName, params: channel.params });
         } catch {
         }
       },
@@ -121,8 +128,10 @@ const runCode = defineTabTool({
       // browser_run_code_unsafe call in this process would then see a
       // phantom overlap and permanently degrade to actions: [], for the life
       // of the process. Same reasoning as addListener just below it.
-      capture = beginScriptCapture();
-      instrumentation?.addListener(listener);
+      if (tracingEnabled) {
+        capture = beginScriptCapture();
+        instrumentation?.addListener(listener);
+      }
       await tab.waitForCompletion(async () => {
         // Compile the user function separately to avoid template literal escaping issues
         // when the code contains backticks.
@@ -143,12 +152,14 @@ const runCode = defineTabTool({
       });
     } finally {
       unsubscribe();
-      instrumentation?.removeListener(listener);
-      // `capture` is only unset if beginScriptCapture() itself never ran
-      // (i.e. this finally is unwinding an exception thrown before reaching
-      // it in the try) -- in that case there is nothing registered in
-      // activeCaptures to release, so fall back to an empty actions array
-      // rather than calling endScriptCapture() on nothing.
+      if (tracingEnabled)
+        instrumentation?.removeListener(listener);
+      // `capture` is unset both when tracing is disabled (the gate above
+      // never ran beginScriptCapture()) and when this finally is unwinding
+      // an exception thrown before reaching it in the try -- in either case
+      // there is nothing registered in activeCaptures to release, so fall
+      // back to an empty actions array rather than calling
+      // endScriptCapture() on nothing.
       tab.context.setScriptTelemetry(epoch, { filename: params.filename, sha256, args: params.args, actions: capture ? endScriptCapture(capture) : [] });
     }
   },

@@ -19,7 +19,7 @@ import debug from 'debug';
 import { Context } from './context';
 import { Response } from './response';
 import { SessionLog } from './sessionLog';
-import { TraceLog } from './traceLog';
+import { TraceLog, TRACE_SCHEMA_VERSION } from './traceLog';
 import { packageJSON } from '../../package';
 import type { ContextConfig } from './context';
 import type * as playwright from '../../..';
@@ -50,7 +50,12 @@ export class BrowserBackend implements ServerBackend {
   async initialize(clientInfo: ClientInfo): Promise<void> {
     this._sessionLog = this._config.saveSession ? await SessionLog.create(this._config, clientInfo.cwd) : undefined;
     this._traceLog = this._config.saveTrace
-      ? await TraceLog.create(this._config, clientInfo.cwd, { clientName: clientInfo.clientName, runtimeVersion: packageJSON.version })
+      ? await TraceLog.create(this._config, clientInfo.cwd, {
+        clientName: clientInfo.clientName,
+        runtimeVersion: packageJSON.version,
+        productVersion: this._config.productVersion,
+        protocolVersion: this._config.protocolVersion,
+      })
       : undefined;
     this._context = new Context(this.browserContext, {
       config: this._config,
@@ -123,7 +128,7 @@ export class BrowserBackend implements ServerBackend {
       try {
         const telemetry = context.takeActionTelemetry();
         traceLog?.appendRecord({
-          v: 1,
+          v: TRACE_SCHEMA_VERSION,
           seq: traceLog.nextSeq(),
           tool: name,
           startedAt,

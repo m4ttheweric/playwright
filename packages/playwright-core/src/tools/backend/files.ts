@@ -73,7 +73,7 @@ export const drop = defineTabTool({
       throw new Error('At least one of "paths" or "data" must be provided.');
 
     response.setIncludeSnapshot();
-    const { locator, resolved } = await tab.targetLocator(params);
+    const { locator, resolved } = await tab.targetLocator(params, { trace: true });
 
     if (params.paths)
       await Promise.all(params.paths.map(p => response.resolveClientFilename(p)));

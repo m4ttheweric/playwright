@@ -23,6 +23,7 @@ import { BrowserBackend } from '../backend/browserBackend';
 import { filteredTools } from '../backend/tools';
 import { testDebug } from './log';
 import { packageJSON } from '../../package';
+import { VERSION as PROTOCOL_VERSION } from './protocol';
 
 import type { Command } from 'commander';
 import type { ClientInfo } from '../utils/mcp/server';
@@ -130,7 +131,13 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
               await browser.bind(sessionName, { workspaceDir: clientInfo.cwd });
             }
             const browserContext = config.browser.isolated ? await browser.newContext({ ...config.browser.contextOptions, ...videoRecordingOptions(config, clientInfo) }) : browser.contexts()[0];
-            return new BrowserBackend(config, browserContext, tools);
+            // `config` itself stays FullConfig-typed (it's reused above for
+            // browser.isolated/contextOptions); productVersion/protocolVersion
+            // are ContextConfig-only fields threaded in here as plain data
+            // (backend/ cannot import mcp/protocol.ts -- see DEPS.list) so
+            // TraceLog.create can report them in meta.json without a hardcoded
+            // protocolVersion literal living in the backend.
+            return new BrowserBackend({ ...config, productVersion: serverVersion, protocolVersion: PROTOCOL_VERSION }, browserContext, tools);
           },
           disposed: async backend => {
             clientCount--;

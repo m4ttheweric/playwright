@@ -39,7 +39,7 @@ const fillForm = defineTabTool({
 
   handle: async (tab, params, response) => {
     for (const field of params.fields) {
-      const { locator, resolved } = await tab.targetLocator({ element: field.name, target: field.target });
+      const { locator, resolved } = await tab.targetLocator({ element: field.name, target: field.target }, { trace: true });
       const locatorSource = `await page.${resolved}`;
       if (field.type === 'textbox' || field.type === 'slider') {
         const secret = tab.context.lookupSecret(field.value);
