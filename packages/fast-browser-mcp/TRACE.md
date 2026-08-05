@@ -185,7 +185,12 @@ export type TraceScriptAction = { apiName: string, params?: unknown, error?: str
 // these fields expecting an array, never a bare object). `omittedElements`
 // counts entries dropped from the END of the array (kept elements are always
 // a prefix); `sizeBytes` is the post-walk serialized size of the FULL array
-// before trimming, not of the marker or the kept prefix.
+// before trimming, not of the marker or the kept prefix -- EXCEPT when this
+// marker comes from scriptCapture.ts's MAX_CAPTURED_ACTIONS cap (a different
+// producer of this same marker shape, upstream of and unrelated to this
+// file's own truncation): there, entries past the cap were never retained in
+// the first place, so `sizeBytes` is the serialized size of the kept
+// (capped) entries instead -- there is no "full" array to honestly measure.
 export type TraceTruncationMarker = { __truncated__: true, omittedElements: number, sizeBytes: number };
 
 // This trace format's schema version. Used for both meta.json's
@@ -487,7 +492,13 @@ script?: { filename?: string, sha256: string, args?: unknown, actions: (TraceScr
   no Playwright API calls. **Do not infer "the script did nothing" from an
   empty `actions` array — treat the script as opaque** (verifiable only via
   `sha256`/`args`/`network`/`code`/the tool's own response) whenever
-  `actions` is empty.
+  `actions` is empty. `sha256`/`filename`/`args` are guaranteed to survive
+  alongside `actions` regardless of what happens to `actions` itself —
+  contamination, the 10,000-entry cap below, or `actions` alone exceeding
+  the 64 KiB write-time budget (see **Truncation**, below) all leave
+  `script`'s other keys untouched; there is no scenario in which verifying
+  an opaque script via its siblings is undermined by `actions` being large
+  or empty.
   - Independently of contamination, `actions` is capped at 10,000 captured
     entries in memory as they're observed
     (`scriptCapture.ts`'s `MAX_CAPTURED_ACTIONS`), to bound a single
@@ -499,7 +510,16 @@ script?: { filename?: string, sha256: string, args?: unknown, actions: (TraceScr
     **Truncation**, below) — `omittedElements` is the count of API calls
     past the cap; `sizeBytes` is the serialized size of the 10,000 kept
     entries, not of the omitted tail (which was never retained, so has no
-    honest size to report).
+    honest size to report). Unlike `network`/`targets`/`code` (always
+    top-level fields with the full 64 KiB to themselves), a capped
+    `actions` array that *still* exceeds 64 KiB on its own may get
+    trimmed further at write time, and with a smaller budget than usual if
+    `script`'s other keys (`sha256`, `filename`, a sizeable `args`) need
+    room too — see **Truncation**'s note on an object sharing its budget
+    among its properties. Either way `actions` stays an array and
+    `script`'s other keys stay intact; only the trailing marker's
+    `omittedElements`/`sizeBytes` numbers, and which of the two capping
+    mechanisms produced them, differ.
 
 ### `error`
 
@@ -513,13 +533,15 @@ call threw, or extracted from the response's error text otherwise.
 Any individual `TraceRecord` **value** — not the record as a whole — whose
 JSON-serialized size (`Buffer.byteLength` of `JSON.stringify(value)`)
 exceeds 64 KiB (`MAX_VALUE_BYTES = 64 * 1024`) is truncated before the
-record is written. What "truncated" means depends on whether the
-oversized value is an **array** or not — this split exists specifically so
-oversized array fields (`network`, `targets`, `code`, `script.actions`)
-never stop being arrays:
+record is written. What "truncated" means depends on the value's shape —
+this split exists specifically so oversized array fields (`network`,
+`targets`, `code`, `script.actions`) never stop being arrays, **and** so an
+object holding one of those arrays (e.g. `script` as a whole) never loses
+its *other* keys just because the array pushed the object's aggregate size
+over budget:
 
 - **Arrays keep their type.** An oversized array is walked element-wise
-  and truncated to a prefix that fits the budget, then gets exactly one
+  and truncated to a prefix that fits its budget, then gets exactly one
   `TraceTruncationMarker` appended as its final element:
 
   ```json
@@ -529,19 +551,48 @@ never stop being arrays:
   `omittedElements` is how many elements past the kept prefix were
   dropped; `sizeBytes` is the full array's serialized size *before*
   trimming (not the trimmed/kept portion's size, and not the marker's own
-  size). Elements are always dropped from the **end** — the kept portion
-  is always a prefix of the original array, so ordering-sensitive readers
-  (e.g. `network`/`code` entries in call order, `script.actions` in
-  execution order) can rely on "everything before the marker is in its
-  original relative order, and there is nothing meaningful after it."
-  Emitted by `truncateArrayIfOversized()` in `traceLog.ts`. A reader
-  should treat the **last** element of any of these four fields as a
-  possible marker and check it structurally (`__truncated__ === true` and
-  `typeof omittedElements === 'number'`) rather than assuming array length
-  alone means nothing was dropped.
-- **Non-array containers still collapse to a bare marker.** An oversized
-  *object* value (not an array) — e.g. `script` as a whole, or a subtree
-  inside `script.args` — is replaced wholesale by:
+  size) — **except** for a capped, non-contaminated `script.actions` array
+  specifically, where `sizeBytes` is the serialized size of the *kept*
+  (post-cap) entries instead, because the entries past
+  `scriptCapture.ts`'s `MAX_CAPTURED_ACTIONS` cap were never retained in
+  memory to measure honestly in the first place (see **`script` —
+  `browser_run_code_unsafe` only**, above). Elements are always dropped
+  from the **end** — the kept portion is always a prefix of the original
+  array, so ordering-sensitive readers (e.g. `network`/`code` entries in
+  call order, `script.actions` in execution order) can rely on "everything
+  before the marker is in its original relative order, and there is
+  nothing meaningful after it." Emitted by `truncateArrayIfOversized()` in
+  `traceLog.ts`. A reader should treat the **last** element of any of
+  these four fields as a possible marker and check it structurally
+  (`__truncated__ === true` and `typeof omittedElements === 'number'`)
+  rather than assuming array length alone means nothing was dropped.
+
+  An array's budget is not always the full 64 KiB: a top-level array field
+  (`network`, `targets`, `code`) always gets the full budget, since nothing
+  else competes for it, but an array **nested inside an object** (e.g.
+  `script.actions`, or an array inside `params`) may get a smaller,
+  sibling-reduced budget — see the next bullet.
+- **An object holding an oversized array (or other large nested value)
+  shrinks that value before ever collapsing itself.** `script`
+  (`{filename, sha256, args, actions}`) is the concrete case this exists
+  for: a large `actions` array must not cost the object its
+  `sha256`/`filename`/`args`. When an object's total size exceeds its
+  budget, its scalar (string/number/boolean/null) properties are treated
+  as a fixed, non-shrinkable cost, and its object- or array-valued
+  ("compound") properties are re-trimmed using whatever budget is left
+  over once that fixed cost is paid for — an array-valued property is
+  re-trimmed via the same `truncateArrayIfOversized()` as above (now with
+  a smaller budget); an object-valued property (e.g. `script.args`, if it
+  itself holds a large array) recurses into this exact same "shrink my own
+  compound properties first" logic at its own level, one level deeper.
+  When more than one compound property needs shrinking at once, the
+  available budget is split so a property that already fits its natural
+  size isn't needlessly shrunk further just because a sibling is huge (a
+  `script.actions: []` sibling doesn't eat into the budget an oversized
+  `script.args` needs). Only when the object's *fixed* content alone
+  already exceeds budget — or when every compound property, shrunk as far
+  as its share of the leftover budget allows, still doesn't add up to a
+  fit — does the object collapse wholesale to a bare marker:
 
   ```json
   { "__truncated__": true, "sizeBytes": 123456 }
@@ -549,26 +600,34 @@ never stop being arrays:
 
   This marker has no `omittedElements` key — that is precisely how a
   reader tells the two marker shapes apart (see below). Unlike the array
-  case, there is no "keep a prefix" concept for an arbitrary object: the
-  whole value is gone, replaced by this one marker.
+  case, there is no "keep a prefix" concept for an arbitrary object: when
+  this fires, the whole value is gone, replaced by this one marker.
+  Emitted by `truncateOversizedObject()` in `traceLog.ts`.
 - **A long string value also collapses to the object-shaped marker**
   (`{ "__truncated__": true, "sizeBytes": ... }`) when it alone exceeds 64
   KiB — e.g. `error`, `urlBefore`/`urlAfter`, or a string leaf somewhere
-  inside `params`/`script.args`.
+  inside `params`/`script.args`. A string is never "trimmed" to a shorter
+  string; it is either kept whole or replaced by the marker.
 
 Key semantics, all load-bearing for anything reading `actions.jsonl`:
 
 - **The rule is per-value within a record, never per-record.** Truncation
   is decided independently for each of the record's top-level fields (`v`,
   `seq`, `tool`, `startedAt`, ..., `error`), each walked and truncated on
-  its own. A record with several individually-small fields whose
-  *aggregate* size exceeds 64 KiB is written intact — nothing about the
-  record as a whole is ever collapsed, checked, or acted on as a unit.
+  its own with the full 64 KiB budget. A record with several
+  individually-small fields whose *aggregate* size exceeds 64 KiB is
+  written intact — nothing about the record as a whole is ever collapsed,
+  checked, or acted on as a unit. This is the same rule, one level up, as
+  the object-vs-collapse behavior above — the record itself is simply never
+  treated as a value that could collapse in the first place (see the next
+  bullet), so there's no "record budget" to share among its top-level
+  fields the way a field's own budget gets shared among *its* properties.
 - **The top-level record never collapses to a bare marker.** There is no
   code path that treats the whole `TraceRecord` as a truncatable leaf —
   `appendRecord()` (`traceLog.ts`) always writes an object with every
-  `TraceRecord` key present, walking each field independently rather than
-  handing the whole record to the truncation walk in one call.
+  `TraceRecord` key present, walking each field independently (each with
+  its own full budget) rather than handing the whole record to the
+  truncation walk in one call.
 - **`v`, `seq`, and `mutating` are structurally exempt from truncation, not
   just practically small.** They are a number/number/boolean, and
   `truncateOversizedValues()`'s size check only ever runs on strings and
@@ -586,21 +645,28 @@ Key semantics, all load-bearing for anything reading `actions.jsonl`:
   these three keys can never be `{ __truncated__: true, sizeBytes }` —
   build one that (like every other string field) checks the value's type
   before treating it as a plain string.
-- **The walk is bottom-up and per-field**, so truncation can apply to a
-  *subtree* inside a field (e.g. `script.args.someHugeKey`) without
-  discarding the rest of that field's sibling keys, and an array nested
-  inside an object field (e.g. `script.args.items`, if the caller's own
-  `args` happens to contain an array) gets the same array-keeps-its-type
-  treatment as a top-level array field — this rule is about the *value*
-  being truncated, not about field position. When a subtree collapses,
-  `sizeBytes` is the size of that subtree's JSON **after its own children
-  have already been truncated** (post-child-truncation size), not its
-  original pre-truncation size — a container that only became small enough
-  to report accurately because a child inside it was already replaced by a
+- **The walk is bottom-up and recursive, so shrinking applies at every
+  nesting depth, not just the top level.** An array nested inside an object
+  field (e.g. `script.args.items`, if the caller's own `args` happens to
+  contain an array) gets the same array-keeps-its-type treatment as a
+  top-level array field, and an object nested inside another object (e.g.
+  `script.args` itself) applies the same "shrink my own compound
+  properties before collapsing" logic independently at its own level —
+  this rule is about the *value* being truncated, not about field position
+  or nesting depth. When a subtree collapses or an array trims,
+  `sizeBytes` is the size of that subtree's/array's JSON **after its own
+  children have already been walked** (post-child-truncation size, and for
+  an array, *before* the by-count trim itself), not its original
+  pre-truncation size — a container that only became small enough to
+  report accurately because a child inside it was already replaced by a
   marker still reports the size it actually serializes to now, not a
-  number for data that's no longer there. The same applies to an
-  oversized array's `sizeBytes`: it is the post-walk (children already
-  truncated) size of the full array before trimming.
+  number for data that's no longer there. Sizing is always computed from
+  the true value at the point of trimming, never from an
+  already-once-trimmed intermediate — an object that re-trims an array
+  with a smaller, sibling-reduced budget does so starting from the same
+  once-walked array the optimistic first attempt used, not from that
+  attempt's own (now-discarded) trimmed result, so `sizeBytes` on the
+  final marker is always honest.
 - **The cycle marker omits both `sizeBytes` and `omittedElements`**:
   `{ "__truncated__": true }` alone. This only fires for an object the walk
   has already visited as one of its own ancestors — expected to be
