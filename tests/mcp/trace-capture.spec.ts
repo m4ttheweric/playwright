@@ -258,3 +258,27 @@ test('run_code records script hash, args, and internal API actions', async ({ st
   const apiNames = rec.script.actions.map((a: any) => a.apiName);
   expect(apiNames.some((n: string) => /click/i.test(n))).toBe(true);
 });
+
+test('oversized param values are truncated in the record', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  const big = 'x'.repeat(100 * 1024);
+  await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async (page, args) => args.big.length`, args: { big } } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const rec = lines.find(l => l.tool === 'browser_run_code_unsafe');
+  expect(rec.script.args.big.__truncated__).toBe(true);
+  expect(rec.script.args.big.sizeBytes).toBe(100 * 1024);
+});
+
+test('meta.json gains endedAt when the client disconnects cleanly', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  await client.close();
+  await expect.poll(() => {
+    const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+    return JSON.parse(fs.readFileSync(path.join(outputDir, traceDir, 'meta.json'), 'utf-8')).endedAt;
+  }).toBeTruthy();
+});
