@@ -32,12 +32,9 @@ test('--save-trace creates trace dir with meta.json and actions.jsonl', async ({
   expect(fs.existsSync(path.join(outputDir, traceDir!, 'actions.jsonl'))).toBe(true);
 });
 
-test('no trace dir without --save-trace', async ({ startClient, server }, testInfo) => {
-  const outputDir = testInfo.outputPath('output');
-  const { client } = await startClient({ args: [`--output-dir=${outputDir}`] });
-  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
-  expect(fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))).toBeFalsy();
-});
+// The `--save-trace` absent -> no trace dir case is a product contract
+// (a promise about default behavior), not an implementation detail of
+// TraceLog -- it lives in tests/mcp/fast-browser-contract.spec.ts.
 
 test('each tool call appends one TraceRecord with tool, params, urls, code', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');

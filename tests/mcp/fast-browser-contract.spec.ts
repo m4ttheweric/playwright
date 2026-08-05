@@ -14,7 +14,41 @@
  * limitations under the License.
  */
 
-import { test, expect } from './fixtures';
+import fs from 'fs';
+import path from 'path';
+
+import { test, expect, parseResponse } from './fixtures';
+
+test('no trace dir without --save-trace', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: [`--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  expect(fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))).toBeFalsy();
+});
+
+test('meta.json reports trace schema 1 and extension protocol 2', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const meta = JSON.parse(fs.readFileSync(path.join(outputDir, traceDir, 'meta.json'), 'utf-8'));
+  expect(meta.schemaVersion).toBe(1);
+  expect(meta.protocolVersion).toBe(2);
+});
+
+test('a mutating click is recorded with mutating: true', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/post.html', `<button onclick="fetch('/api/submit', { method: 'POST' })">Go</button>`, 'text/html');
+  server.setContent('/api/submit', 'ok', 'text/plain');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/post.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const ref = /"Go"\s*\[ref=(e\d+)\]/.exec(parseResponse(snap, outputDir)?.inlineSnapshot ?? '')![1];
+  await client.callTool({ name: 'browser_click', arguments: { element: 'Go button', target: ref } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  expect(lines.find(l => l.tool === 'browser_click').mutating).toBe(true);
+});
 
 test('unsafe run code is destructive and snapshot-none remains explicit', async ({
   startClient,
