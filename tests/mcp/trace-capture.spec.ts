@@ -184,13 +184,26 @@ test('click records target with locator alternates and accessible role/name', as
 
 test('browser_snapshot (read-only) records empty targets, not an enriched action', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
+  server.setContent('/plain.html', `<button id="btn">Click me</button>`, 'text/html');
   const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
-  await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
-  await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/plain.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const ref = /"Click me"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+  // browser_snapshot's own `target` param (snapshot.ts:52-53) resolves a real
+  // locator through tab.targetLocator -- the same shared resolution code the
+  // 5 enriched tools call -- but this call site never passes { trace: true }.
+  // Without a target param the handler skips targetLocator entirely (see the
+  // no-target call above), which would leave this differentiator unproven:
+  // this second call must actually reach targetLocator and still come back
+  // empty, or a regression that flips the opt-in default would go uncaught.
+  await client.callTool({ name: 'browser_snapshot', arguments: { target: ref } });
   const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
   const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
-  const snapshotRecord = lines.find(l => l.tool === 'browser_snapshot');
-  expect(snapshotRecord.targets).toEqual([]);
+  const snapshotRecords = lines.filter(l => l.tool === 'browser_snapshot');
+  expect(snapshotRecords.length).toBe(2);
+  for (const record of snapshotRecords)
+    expect(record.targets).toEqual([]);
 });
 
 test('a bare selector candidate with no engine prefix maps to kind css, not other', async ({ startClient, server }, testInfo) => {
