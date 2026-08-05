@@ -34,6 +34,16 @@ test('meta.json reports trace schema 1 and extension protocol 2', async ({ start
   const meta = JSON.parse(fs.readFileSync(path.join(outputDir, traceDir, 'meta.json'), 'utf-8'));
   expect(meta.schemaVersion).toBe(1);
   expect(meta.protocolVersion).toBe(2);
+  // IMPORTANT 5: productVersion is threaded from mcp/program.ts's
+  // serverVersion (decorateMCPCommand's default is packageJSON.version, the
+  // same source runtimeVersion already reads in this default-CLI-entry
+  // context) into ContextConfig into TraceLog.create -- it must be present,
+  // not just protocolVersion. The Fast Browser product build
+  // (fast-browser-mcp/cli.cjs) overrides serverVersion to its own package
+  // version, which this test's default entry point (entry/mcp.ts) doesn't
+  // exercise, hence asserting presence/type rather than a specific value.
+  expect(typeof meta.productVersion).toBe('string');
+  expect(meta.productVersion.length).toBeGreaterThan(0);
 });
 
 test('a mutating click is recorded with mutating: true', async ({ startClient, server }, testInfo) => {

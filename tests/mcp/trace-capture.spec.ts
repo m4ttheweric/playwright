@@ -20,6 +20,10 @@ import crypto from 'crypto';
 
 import { test, expect, parseResponse } from './fixtures';
 
+import { tools } from '../../packages/playwright-core/lib/coreBundle';
+
+const { TraceLog } = tools;
+
 test('--save-trace creates trace dir with meta.json and actions.jsonl', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
@@ -104,6 +108,31 @@ test('network activity and mutation classification recorded per action', async (
   expect(postClick.mutating).toBe(true);
   expect(getClick.mutating).toBe(false);
   expect(postClick.waits.settleMs).toBeGreaterThanOrEqual(0);
+});
+
+test('a request that never gets a response is recorded with failed: true, not left blank', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  // Port 1 is a reserved, essentially-never-bound TCP port -- the connection
+  // is refused immediately, so request.response() resolves null (not a
+  // throw) rather than hanging. That's the exact branch this covers: before
+  // this fix, only the .catch() path set `failed`, so a request whose
+  // promise resolves null (as a refused connection's does) landed with
+  // neither `status` nor `failed` -- indistinguishable from "not yet
+  // settled." See utils.ts's waitForCompletion.
+  server.setContent('/fail.html', `<button onclick="fetch('http://127.0.0.1:1/x').catch(() => {})">Go</button>`, 'text/html');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/fail.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const ref = /"Go"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+  await client.callTool({ name: 'browser_click', arguments: { element: 'Go button', target: ref } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const click = lines.find(l => l.tool === 'browser_click');
+  const entry = click.network.find((n: any) => n.url.includes('127.0.0.1:1'));
+  expect(entry).toBeTruthy();
+  expect(entry.failed).toBe(true);
+  expect(entry.status).toBeUndefined();
 });
 
 test('a dialog-interrupted action does not leak stale telemetry onto a later trace record', async ({ startClient, server }, testInfo) => {
@@ -240,6 +269,26 @@ test('drag records targets for both start and end elements', async ({ startClien
   expect(drag.targets[1].ref).toBe(dstRef);
 });
 
+test('fill_form records a target per field (IMPORTANT 6: seven enriched tools, not five)', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/form2.html', `<label>Name <input id="name"></label>`, 'text/html');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/form2.html' } });
+  const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  const snapshotText = parseResponse(snap, outputDir)?.inlineSnapshot ?? '';
+  const ref = /textbox "Name"\s*\[ref=(e\d+)\]/.exec(snapshotText)![1];
+  await client.callTool({
+    name: 'browser_fill_form',
+    arguments: { fields: [{ name: 'Name field', type: 'textbox', target: ref, value: 'Ada' }] },
+  });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const fillForm = lines.find(l => l.tool === 'browser_fill_form');
+  expect(fillForm.targets.length).toBe(1);
+  expect(fillForm.targets[0].ref).toBe(ref);
+  expect(fillForm.targets[0].role).toBe('textbox');
+});
+
 test('run_code records script hash, args, and internal API actions', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   server.setContent('/app.html', `<button onclick="this.textContent='done'">Run</button>`, 'text/html');
@@ -294,6 +343,72 @@ test('a record with individually-small fields whose aggregate exceeds 64 KB surv
   expect(typeof rec.endedAt).toBe('string');
   expect(rec.params.args.notQuiteBig).toBe(notQuiteBig);
   expect(rec.script.args.notQuiteBig).toBe(notQuiteBig);
+});
+
+// Unit-level, no browser: exercises TraceLog.appendRecord()'s array-element
+// truncation directly (traceLog.ts's truncateArrayIfOversized), the same way
+// run-code-capture.spec.ts unit-tests scriptCapture.ts's overlap guard.
+// Driving a real `network` array past 64 KB end-to-end would mean firing
+// hundreds of real requests inside one action's window -- slow and, worse,
+// indirect: this is a container-collapse regression test for the write path
+// itself, not for request telemetry, so it goes straight at appendRecord().
+// Scoped to this one test (not file-wide, unlike run-code-capture.spec.ts's
+// file-level skip) since this file otherwise runs real browser tests that do
+// need to run per-project.
+test('an oversized array field survives as an array: real entries plus one trailing truncation marker', async ({ mcpBrowser }, testInfo) => {
+  test.skip(mcpBrowser !== 'chrome', 'Channel-agnostic; doesn\'t touch a browser at all.');
+  const outputDir = testInfo.outputPath('output');
+  const traceLog = await TraceLog.create(
+      { outputDir },
+      testInfo.outputPath(),
+      { clientName: 'test', runtimeVersion: '0.0.0-test' },
+  );
+  // ~71 bytes per serialized entry * 2000 ~= 142 KB, comfortably over the
+  // 64 KB budget, and enough entries that a meaningful prefix survives
+  // (not just "zero kept" or "all kept").
+  const network = Array.from({ length: 2000 }, (_, i) => ({ method: 'GET', url: `https://example.com/${i}`, resourceType: 'fetch' }));
+  expect(Buffer.byteLength(JSON.stringify(network))).toBeGreaterThan(64 * 1024);
+
+  traceLog.appendRecord({
+    v: 1,
+    seq: traceLog.nextSeq(),
+    tool: 'browser_click',
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    params: {},
+    targets: [],
+    network,
+    mutating: false,
+    waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
+    code: [],
+  });
+  await traceLog.close();
+
+  const lines = fs.readFileSync(path.join(traceLog.folder, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const record = lines[0];
+
+  // Identity core intact regardless of the oversized sibling field.
+  expect(record.v).toBe(1);
+  expect(record.seq).toBe(1);
+  expect(record.tool).toBe('browser_click');
+  expect(record.mutating).toBe(false);
+
+  // The field stays a parseable array, not a bare marker object.
+  expect(Array.isArray(record.network)).toBe(true);
+  expect(record.network.length).toBeGreaterThan(1);
+  expect(record.network.length).toBeLessThan(network.length);
+
+  const marker = record.network[record.network.length - 1];
+  expect(marker.__truncated__).toBe(true);
+  expect(typeof marker.omittedElements).toBe('number');
+  expect(marker.omittedElements).toBeGreaterThan(0);
+  expect(marker.sizeBytes).toBe(Buffer.byteLength(JSON.stringify(network)));
+
+  // Leading real entries are an intact, in-order prefix of the original array.
+  const kept = record.network.slice(0, -1);
+  for (let i = 0; i < kept.length; i++)
+    expect(kept[i]).toEqual(network[i]);
+  expect(kept.length + marker.omittedElements).toBe(network.length);
 });
 
 test('meta.json gains endedAt when the client disconnects cleanly', async ({ startClient, server }, testInfo) => {

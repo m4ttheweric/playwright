@@ -18,7 +18,7 @@ import { test, expect } from './fixtures';
 
 import { tools } from '../../packages/playwright-core/lib/coreBundle';
 
-const { beginScriptCapture, endScriptCapture } = tools;
+const { beginScriptCapture, endScriptCapture, recordCapturedAction, MAX_CAPTURED_ACTIONS } = tools;
 
 // Unit-level check for the overlap guard in
 // packages/playwright-core/src/tools/backend/scriptCapture.ts, which
@@ -65,6 +65,38 @@ test('a third capture starting after the first ends is unaffected by an earlier 
   const third = beginScriptCapture(); // begins only after both prior captures ended -- no overlap.
   third.actions.push({ apiName: 'locator.fill' });
   expect(endScriptCapture(third)).toEqual([{ apiName: 'locator.fill' }]);
+});
+
+// Fold-in minor from the WS1 fix wave: an unbounded run_code loop must not
+// grow `actions` without limit while the script is in flight. Exercises
+// recordCapturedAction directly rather than pushing MAX_CAPTURED_ACTIONS + N
+// real Playwright API calls through a browser, which would be both slow and
+// indirect for what is purely an in-memory bookkeeping cap.
+test('capture caps in-memory actions and reports omitted entries via a trailing truncation marker', () => {
+  const capture = beginScriptCapture();
+  for (let i = 0; i < MAX_CAPTURED_ACTIONS + 5; i++)
+    recordCapturedAction(capture, { apiName: 'locator.click', params: { i } });
+
+  const actions = endScriptCapture(capture);
+  expect(actions.length).toBe(MAX_CAPTURED_ACTIONS + 1); // capped entries + one marker
+  const kept = actions.slice(0, -1) as { apiName: string, params: { i: number } }[];
+  expect(kept.length).toBe(MAX_CAPTURED_ACTIONS);
+  // Kept entries are the first MAX_CAPTURED_ACTIONS observed, in order --
+  // dropped entries come from the end, not scattered.
+  expect(kept[0].params.i).toBe(0);
+  expect(kept[kept.length - 1].params.i).toBe(MAX_CAPTURED_ACTIONS - 1);
+
+  const marker = actions[actions.length - 1] as any;
+  expect(marker.__truncated__).toBe(true);
+  expect(marker.omittedElements).toBe(5);
+  expect(typeof marker.sizeBytes).toBe('number');
+});
+
+test('a capture that never hits the cap reports no marker', () => {
+  const capture = beginScriptCapture();
+  recordCapturedAction(capture, { apiName: 'page.title' });
+  const actions = endScriptCapture(capture);
+  expect(actions).toEqual([{ apiName: 'page.title' }]);
 });
 
 test('overlap is detected even when the later capture ends first', () => {
