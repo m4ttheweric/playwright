@@ -24,6 +24,7 @@ export { start } from './utils/mcp/server';
 export { createConnection } from './mcp/index';
 export { resolveCLIConfigForCLI, resolveCLIConfigForMCP } from './mcp/config';
 export { outputDir } from './backend/context';
+export { beginScriptCapture, endScriptCapture } from './backend/scriptCapture';
 export { isSystemDirectory } from '@utils/fileUtils';
 export { isProfileLocked } from './mcp/browserFactory';
 export { compareSemver } from './utils/socketConnection';
@@ -36,6 +37,7 @@ export { allSkills, installSkills } from './utils/installSkills';
 export { openDashboardApp, openDashboardForContext } from './dashboard/dashboardApp';
 
 export type { ContextConfig } from './backend/context';
+export type { ScriptCapture } from './backend/scriptCapture';
 export type { CallToolRequest, CallToolResult, Tool } from './backend/tool';
 export type { ClientInfo } from './utils/mcp/server';
 export type { FullConfig } from './mcp/config';

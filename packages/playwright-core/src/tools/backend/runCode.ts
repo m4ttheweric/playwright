@@ -22,6 +22,7 @@ import * as z from 'zod';
 import { ManualPromise } from '@isomorphic/manualPromise';
 
 import { defineTabTool } from './tool';
+import { beginScriptCapture, endScriptCapture } from './scriptCapture';
 
 // Type-only: the client instrumentation object (`page._instrumentation`) is
 // reached at runtime via a property read on the already-live `tab.page`
@@ -32,7 +33,6 @@ import { defineTabTool } from './tool';
 // import path once it sees the whole ImportClause is type-only), so this is
 // the only piece of the client internals reachable from here at all.
 import type { ClientInstrumentation, ClientInstrumentationListener } from '../../client/clientInstrumentation';
-import type { TraceScriptAction } from './traceLog';
 
 const codeSchema = z.object({
   code: z.string().optional().describe(`A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: \`async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }\``),
@@ -64,18 +64,28 @@ const runCode = defineTabTool({
     // capture in utils.ts: setScriptTelemetry below must tag its write with
     // the epoch this call actually started under.
     const epoch = tab.context.currentActionEpoch();
-    const actions: TraceScriptAction[] = [];
     // `tab.page` is typed against the public API (index.d.ts), which does not
-    // expose `_instrumentation` -- it is an internal, per-connection field on
-    // ChannelOwner (see client/channelOwner.ts). Reached here via a plain
-    // property read on the already-live object, not an import.
+    // expose `_instrumentation` -- it is an internal field on ChannelOwner
+    // (see client/channelOwner.ts) shared process-wide, not per-page or
+    // per-connection (see scriptCapture.ts for why that matters and how
+    // `capture` guards against it). Reached here via a plain property read on
+    // the already-live object, not an import.
     const instrumentation = (tab.page as any)._instrumentation as ClientInstrumentation | undefined;
+    const capture = beginScriptCapture();
     const listener: ClientInstrumentationListener = {
       onApiCallBegin: (apiCall, channel) => {
-        actions.push({ apiName: apiCall.apiName, params: channel.params });
+        // `_instrumentation` is one Proxy shared by every BrowserBackend in
+        // the process (scriptCapture.ts); its dispatch loop
+        // (clientInstrumentation.ts's `for (const listener of listeners) ...`)
+        // is synchronous and unguarded, so a throw here would break every
+        // OTHER in-flight API call being reported process-wide, not just
+        // this one. Best-effort capture only.
+        try {
+          capture.actions.push({ apiName: apiCall.apiName, params: channel.params });
+        } catch {
+        }
       },
     };
-    instrumentation?.addListener(listener);
     const __end__ = new ManualPromise<void>();
     const context: any = {
       page: tab.page,
@@ -94,6 +104,7 @@ const runCode = defineTabTool({
         __end__.reject(reason instanceof Error ? reason : new Error(String(reason)));
     });
     try {
+      instrumentation?.addListener(listener);
       await tab.waitForCompletion(async () => {
         // Compile the user function separately to avoid template literal escaping issues
         // when the code contains backticks.
@@ -115,7 +126,7 @@ const runCode = defineTabTool({
     } finally {
       unsubscribe();
       instrumentation?.removeListener(listener);
-      tab.context.setScriptTelemetry(epoch, { filename: params.filename, sha256, args: params.args, actions });
+      tab.context.setScriptTelemetry(epoch, { filename: params.filename, sha256, args: params.args, actions: endScriptCapture(capture) });
     }
   },
 });
