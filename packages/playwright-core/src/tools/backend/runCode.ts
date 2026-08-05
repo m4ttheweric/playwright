@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import crypto from 'crypto';
 import fs from 'fs';
 import vm from 'vm';
 
@@ -21,6 +22,17 @@ import * as z from 'zod';
 import { ManualPromise } from '@isomorphic/manualPromise';
 
 import { defineTabTool } from './tool';
+
+// Type-only: the client instrumentation object (`page._instrumentation`) is
+// reached at runtime via a property read on the already-live `tab.page`
+// (below), not via a value import -- `client/**` is outside this backend's
+// DEPS allow-list (only the package root and `src/*` are allowed), and a
+// value import would trip `npm run check-deps`. A type-only import is exempt
+// from DEPS enforcement (utils/check_deps.js returns before checking the
+// import path once it sees the whole ImportClause is type-only), so this is
+// the only piece of the client internals reachable from here at all.
+import type { ClientInstrumentation, ClientInstrumentationListener } from '../../client/clientInstrumentation';
+import type { TraceScriptAction } from './traceLog';
 
 const codeSchema = z.object({
   code: z.string().optional().describe(`A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: \`async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }\``),
@@ -47,6 +59,23 @@ const runCode = defineTabTool({
     response.addCode(params.args !== undefined
       ? `await (${code})(page, ${JSON.stringify(params.args)});`
       : `await (${code})(page);`);
+    const sha256 = crypto.createHash('sha256').update(code ?? '').digest('hex');
+    // Captured up front, same reasoning as waitForCompletion's own epoch
+    // capture in utils.ts: setScriptTelemetry below must tag its write with
+    // the epoch this call actually started under.
+    const epoch = tab.context.currentActionEpoch();
+    const actions: TraceScriptAction[] = [];
+    // `tab.page` is typed against the public API (index.d.ts), which does not
+    // expose `_instrumentation` -- it is an internal, per-connection field on
+    // ChannelOwner (see client/channelOwner.ts). Reached here via a plain
+    // property read on the already-live object, not an import.
+    const instrumentation = (tab.page as any)._instrumentation as ClientInstrumentation | undefined;
+    const listener: ClientInstrumentationListener = {
+      onApiCallBegin: (apiCall, channel) => {
+        actions.push({ apiName: apiCall.apiName, params: channel.params });
+      },
+    };
+    instrumentation?.addListener(listener);
     const __end__ = new ManualPromise<void>();
     const context: any = {
       page: tab.page,
@@ -85,6 +114,8 @@ const runCode = defineTabTool({
       });
     } finally {
       unsubscribe();
+      instrumentation?.removeListener(listener);
+      tab.context.setScriptTelemetry(epoch, { filename: params.filename, sha256, args: params.args, actions });
     }
   },
 });

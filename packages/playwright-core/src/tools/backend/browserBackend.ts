@@ -136,6 +136,7 @@ export class BrowserBackend implements ServerBackend {
           mutating: telemetry.network.some(n => !SAFE_METHODS.has(n.method.toUpperCase())),
           waits: telemetry.waits,
           code: response.code(),
+          script: telemetry.script,
           error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
         });
       } catch (e) {

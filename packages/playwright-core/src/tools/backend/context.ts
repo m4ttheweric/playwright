@@ -29,7 +29,7 @@ import { Tab } from './tab';
 
 import type * as playwrightTypes from '../../..';
 import type { SessionLog } from './sessionLog';
-import type { TraceLog, TraceNetworkEntry, TraceTarget } from './traceLog';
+import type { TraceLog, TraceNetworkEntry, TraceRecord, TraceTarget } from './traceLog';
 import type { Disposable } from '@isomorphic/disposable';
 import type { ToolCapability } from './tool';
 
@@ -124,6 +124,7 @@ export type ActionNetworkTelemetry = {
 // TraceRecord, drained once per call by takeActionTelemetry().
 export type ActionTelemetry = ActionNetworkTelemetry & {
   targets: TraceTarget[];
+  script?: TraceRecord['script'];
 };
 
 // Fresh object per call -- TraceRecord.waits ends up serialized independently
@@ -162,6 +163,13 @@ export class Context {
   // to merge into a possibly-not-yet-created telemetry object from whichever
   // of the two writers happens to run first.
   private _actionTargets: TraceTarget[] = [];
+  // Set by browser_run_code_unsafe's handler once its vm run settles (success
+  // or failure); undefined for every other tool. Same take-once/epoch
+  // discipline as _actionTelemetry/_actionTargets and for the same reason:
+  // runCode.ts's vm run is itself awaited inside waitForCompletion, so it
+  // cannot race a later call the way a modal-interrupted action can, but
+  // reusing the mechanism keeps the drain in takeActionTelemetry() uniform.
+  private _scriptTelemetry: TraceRecord['script'] | undefined;
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -364,6 +372,7 @@ export class Context {
     this._actionEpoch++;
     this._actionTelemetry = undefined;
     this._actionTargets = [];
+    this._scriptTelemetry = undefined;
     return this._actionEpoch;
   }
 
@@ -393,15 +402,28 @@ export class Context {
     this._actionTargets.push(target);
   }
 
+  // Stores script telemetry (source hash, args, captured API actions) for the
+  // browser_run_code_unsafe call tagged with `epoch`. Same epoch discipline
+  // as setActionTelemetry/addActionTarget: a write tagged with a stale epoch
+  // is dropped rather than attaching to a later call's trace record.
+  setScriptTelemetry(epoch: number, script: TraceRecord['script']) {
+    if (epoch !== this._actionEpoch)
+      return;
+    this._scriptTelemetry = script;
+  }
+
   takeActionTelemetry(): ActionTelemetry {
     const telemetry = this._actionTelemetry;
     const targets = this._actionTargets;
+    const script = this._scriptTelemetry;
     this._actionTelemetry = undefined;
     this._actionTargets = [];
+    this._scriptTelemetry = undefined;
     return {
       network: telemetry?.network ?? [],
       waits: telemetry?.waits ?? zeroWaits(),
       targets,
+      script,
     };
   }
 

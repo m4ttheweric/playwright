@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 import { test, expect, parseResponse } from './fixtures';
 
@@ -240,4 +241,20 @@ test('drag records targets for both start and end elements', async ({ startClien
   expect(drag.targets.length).toBe(2);
   expect(drag.targets[0].ref).toBe(srcRef);
   expect(drag.targets[1].ref).toBe(dstRef);
+});
+
+test('run_code records script hash, args, and internal API actions', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  server.setContent('/app.html', `<button onclick="this.textContent='done'">Run</button>`, 'text/html');
+  const { client } = await startClient({ args: ['--save-trace', `--output-dir=${outputDir}`] });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/app.html' } });
+  const code = `async (page, args) => { await page.getByRole('button', { name: 'Run' }).click(); return await page.getByRole('button').textContent(); }`;
+  await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code, args: { who: 'test' } } });
+  const traceDir = fs.readdirSync(outputDir).find(f => f.startsWith('trace-'))!;
+  const lines = fs.readFileSync(path.join(outputDir, traceDir, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+  const rec = lines.find(l => l.tool === 'browser_run_code_unsafe');
+  expect(rec.script.sha256).toBe(crypto.createHash('sha256').update(code).digest('hex'));
+  expect(rec.script.args).toEqual({ who: 'test' });
+  const apiNames = rec.script.actions.map((a: any) => a.apiName);
+  expect(apiNames.some((n: string) => /click/i.test(n))).toBe(true);
 });
