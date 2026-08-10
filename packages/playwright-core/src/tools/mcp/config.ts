@@ -72,7 +72,7 @@ export type CLIOptions = {
   saveVideo?: ViewportSize;
   secrets?: Record<string, string>;
   sharedBrowserContext?: boolean;
-  snapshotMode?: 'full' | 'none';
+  snapshotMode?: 'full' | 'none' | 'interactive';
   storageState?: string;
   testIdAttribute?: string;
   timeoutAction?: number;

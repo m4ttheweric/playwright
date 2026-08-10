@@ -189,3 +189,97 @@ test('browser_snapshot relative traversal is rejected, nothing written', async (
   expect(fs.existsSync(path.join(path.dirname(outputDir), 'escape.yml'))).toBe(false);
   expect(fs.existsSync(testInfo.outputPath('escape.yml'))).toBe(false);
 });
+
+test('browser_snapshot(interactiveOnly) keeps the controls and drops the prose', async ({ client, server }) => {
+  server.setContent('/', `
+    <body>
+      <nav aria-label="Main"><ul><li><a href="/docs">Docs</a></li></ul></nav>
+      <main>
+        <h1>Welcome</h1>
+        <p>A paragraph of page text that no agent can click on.</p>
+        <button>Search</button>
+      </main>
+    </body>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const full = await client.callTool({ name: 'browser_snapshot' });
+  const compact = await client.callTool({
+    name: 'browser_snapshot',
+    arguments: { interactiveOnly: true },
+  });
+
+  expect(compact).toHaveResponse({
+    inlineSnapshot: expect.stringContaining(`- button "Search" [ref=`),
+  });
+  expect(compact.content[0].text).toContain('- link "Docs" [ref=');
+  expect(compact.content[0].text).toContain('- heading "Welcome"');
+  expect(compact.content[0].text).not.toContain('A paragraph of page text');
+  expect(compact.content[0].text).toContain('non-interactive nodes omitted');
+  expect(compact.content[0].text.length).toBeLessThan(full.content[0].text.length);
+});
+
+test('should respect --snapshot-mode=interactive on an implicit snapshot', async ({ startClient, server }) => {
+  server.setContent('/', `
+    <body>
+      <p>A paragraph of page text that no agent can click on.</p>
+      <button>Button 1</button>
+    </body>
+  `, 'text/html');
+
+  const { client } = await startClient({
+    args: ['--snapshot-mode=interactive'],
+  });
+
+  // The implicit snapshot that rides along with navigate is the one a harness
+  // actually pays for on every turn, so the mode has to reach it too.
+  const response = await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(response).toHaveResponse({
+    snapshot: expect.stringContaining(`- button "Button 1" [ref=`),
+  });
+  expect(response).toHaveResponse({
+    snapshot: expect.not.stringContaining(`A paragraph of page text`),
+  });
+});
+
+test('a ref taken from an interactiveOnly snapshot still resolves', async ({ client, server }) => {
+  server.setContent('/', `
+    <body>
+      <div><div><div>
+        <p>Wrappers and prose the compact snapshot throws away.</p>
+        <button onclick="document.title = 'Clicked'">Press me</button>
+      </div></div></div>
+    </body>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const compact = await client.callTool({
+    name: 'browser_snapshot',
+    arguments: { interactiveOnly: true },
+  });
+
+  // Compact mode re-indents what survives, so the one thing that must not be
+  // rewritten along the way is the ref. If it were, the mode would be a trap:
+  // smaller, and unusable for the clicking it exists to support.
+  const ref = /- button "Press me" \[ref=([^\]]+)\]/.exec(compact.content[0].text)?.[1];
+  expect(ref).toBeTruthy();
+
+  expect(await client.callTool({
+    name: 'browser_click',
+    arguments: { element: 'Press me', target: ref },
+  })).toHaveResponse({
+    page: expect.stringContaining('- Page Title: Clicked'),
+  });
+});

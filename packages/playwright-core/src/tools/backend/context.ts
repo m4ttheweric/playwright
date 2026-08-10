@@ -59,7 +59,7 @@ export type ContextConfig = {
   protocolVersion?: number;
   secrets?: Record<string, string>;
   snapshot?: {
-    mode?: 'full' | 'none';
+    mode?: 'full' | 'none' | 'interactive';
   };
   testIdAttribute?: string;
   timeouts?: {
@@ -150,6 +150,7 @@ export class Context {
   private _rawBrowserContext: playwrightTypes.BrowserContext;
   private _browserContextPromise: Promise<playwrightTypes.BrowserContext> | undefined;
   private _tabs: Tab[] = [];
+  private _lastRenderedTabs: playwrightTypes.Page[] = [];
   private _currentTab: Tab | undefined;
   private _routes: RouteEntry[] = [];
   private _video: {
@@ -223,6 +224,22 @@ export class Context {
 
   tabs(): Tab[] {
     return this._tabs;
+  }
+
+  // Whether the set of open tabs differs from the last time this was asked.
+  //
+  // A per-tab header cannot answer this. A tab that closes leaves no header
+  // behind to report itself, and the tabs that remain may be entirely
+  // unchanged -- so closing the last tab, which is the one tab event a caller
+  // must never miss, is invisible from the headers alone. Consuming rather
+  // than peeking, because a response that renders the list has told the
+  // caller, and the next one should not repeat it.
+  consumeTabListChanged(): boolean {
+    const pages = this._tabs.map(tab => tab.page);
+    const changed = pages.length !== this._lastRenderedTabs.length
+        || pages.some((page, index) => this._lastRenderedTabs[index] !== page);
+    this._lastRenderedTabs = pages;
+    return changed;
   }
 
   currentTab(): Tab | undefined {

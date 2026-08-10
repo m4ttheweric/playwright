@@ -34,6 +34,7 @@ const press = defineTabTool({
   handle: async (tab, params, response) => {
     response.addCode(`// Press ${params.key}`);
     response.addCode(`await page.keyboard.press('${params.key}');`);
+    response.addTextResult(`Pressed ${params.key}`);
     if (params.key === 'Enter') {
       response.setIncludeSnapshot();
       await tab.waitForCompletion(async () => {
@@ -63,6 +64,9 @@ const pressSequentially = defineTabTool({
   handle: async (tab, params, response) => {
     response.addCode(`// Press ${params.text}`);
     response.addCode(`await page.keyboard.type('${params.text}');`);
+    // The text itself stays out of the acknowledgement: it may be a secret,
+    // and a receipt is not worth putting one in the transcript.
+    response.addTextResult(`Typed ${params.text.length} characters`);
     await tab.page.keyboard.type(params.text);
     if (params.submit) {
       response.addCode(`await page.keyboard.press('Enter');`);
@@ -93,6 +97,8 @@ const type = defineTabTool({
   handle: async (tab, params, response) => {
     const { locator, resolved } = await tab.targetLocator(params, { trace: true });
     const secret = tab.context.lookupSecret(params.text);
+    // Names the field, never the value, which may be a secret.
+    response.addTextResult(`Typed into ${params.element || resolved}`);
 
     const action = async () => {
       if (params.slowly) {
@@ -134,6 +140,7 @@ const keydown = defineTabTool({
 
   handle: async (tab, params, response) => {
     response.addCode(`await page.keyboard.down('${params.key}');`);
+    response.addTextResult(`Pressed ${params.key} down`);
     await tab.page.keyboard.down(params.key);
   },
 });
@@ -154,6 +161,7 @@ const keyup = defineTabTool({
 
   handle: async (tab, params, response) => {
     response.addCode(`await page.keyboard.up('${params.key}');`);
+    response.addTextResult(`Released ${params.key}`);
     await tab.page.keyboard.up(params.key);
   },
 });

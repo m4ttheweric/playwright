@@ -70,12 +70,17 @@ test('create new tab', async ({ client }) => {
 - 2: (current) [Tab two](data:text/html,<title>Tab two</title><body>Body two</body>)`,
     snapshot: `- generic [active] [ref=e1]: Body two`,
   });
-  expect(await client.callTool({
+  // Nothing moved between that tab being created and this snapshot, and the
+  // response above already named Tab two as current, so the page block and the
+  // tab list are not repeated here.
+  const snapshot = await client.callTool({
     name: 'browser_snapshot',
     arguments: {},
-  })).toHaveResponse({
-    page: expect.stringContaining('Page URL: data:text/html,<title>Tab two</title><body>Body two</body>'),
   });
+  expect(snapshot).toHaveResponse({
+    inlineSnapshot: `- generic [active] [ref=e1]: Body two`,
+  });
+  expect(snapshot.content[0].text).not.toContain('### Page');
 });
 
 test('create new tab with url', async ({ client }) => {

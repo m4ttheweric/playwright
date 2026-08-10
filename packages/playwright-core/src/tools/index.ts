@@ -17,6 +17,7 @@
 export { setupExitWatchdog } from './mcp/watchdog';
 
 export { BrowserBackend } from './backend/browserBackend';
+export { compactAriaSnapshot } from './backend/compactSnapshot';
 export { parseResponse } from './backend/response';
 export { Tab } from './backend/tab';
 export { browserTools, filteredTools } from './backend/tools';

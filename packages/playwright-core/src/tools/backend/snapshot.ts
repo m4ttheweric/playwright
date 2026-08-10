@@ -43,6 +43,7 @@ const snapshot = defineTabTool({
       filename: z.string().optional().describe('Save snapshot to a file instead of returning it in the response. A relative name resolves inside the session output directory (never the process working directory); an absolute path is used as given. The result reports the resolved absolute path.'),
       depth: z.number().optional().describe('Limit the depth of the snapshot tree'),
       boxes: z.boolean().optional().describe('Include each element\'s bounding box as [box=x,y,width,height] in the snapshot. Coordinates are viewport-relative, in CSS pixels (Element.getBoundingClientRect)'),
+      interactiveOnly: z.boolean().optional().describe('Return only what can be acted on -- controls, links and the landmarks and headings around them -- with the wrappers and page text dropped. Much smaller, and NOT a way to read the page: use a default snapshot or browser_find for that. The number of omitted nodes is reported with the result'),
     }),
     type: 'readOnly',
   },
@@ -51,7 +52,7 @@ const snapshot = defineTabTool({
     let resolved: { locator: playwright.Locator | undefined, resolved: string } = { locator: undefined, resolved: '' };
     if (params.target)
       resolved = await tab.targetLocator({ target: params.target });
-    response.setIncludeFullSnapshot(params.filename, resolved.locator, params.depth, params.boxes);
+    response.setIncludeFullSnapshot(params.filename, resolved.locator, params.depth, params.boxes, params.interactiveOnly);
   },
 });
 
