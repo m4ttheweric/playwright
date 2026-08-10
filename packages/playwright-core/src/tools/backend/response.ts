@@ -20,6 +20,7 @@ import path from 'path';
 import debug from 'debug';
 import { renderModalStates } from './tab';
 import { scaleImageToFitMessage } from './screenshot';
+import { compactAriaSnapshot } from './compactSnapshot';
 
 import { outputDir as resolveOutputDir } from './context';
 
@@ -53,6 +54,7 @@ export class Response {
   private _includeSnapshotRoot: playwright.Locator | undefined;
   private _includeSnapshotDepth: number | undefined;
   private _includeSnapshotBoxes: boolean | undefined;
+  private _compactSnapshot: boolean = false;
   private _isClose: boolean = false;
 
   readonly toolName: string;
@@ -152,15 +154,21 @@ export class Response {
   }
 
   setIncludeSnapshot() {
-    this._includeSnapshot = this._context.config.snapshot?.mode ?? 'full';
+    const mode = this._context.config.snapshot?.mode ?? 'full';
+    // `interactive` is a filter over a full snapshot, not a third kind of
+    // snapshot: it is still captured and still written wherever a full one
+    // would be, so everything downstream of here treats it as 'full'.
+    this._includeSnapshot = mode === 'none' ? 'none' : 'full';
+    this._compactSnapshot = mode === 'interactive';
   }
 
-  setIncludeFullSnapshot(includeSnapshotFileName?: string, root?: playwright.Locator, depth?: number, boxes?: boolean) {
+  setIncludeFullSnapshot(includeSnapshotFileName?: string, root?: playwright.Locator, depth?: number, boxes?: boolean, interactiveOnly?: boolean) {
     this._includeSnapshot = 'explicit';
     this._includeSnapshotFileName = includeSnapshotFileName;
     this._includeSnapshotDepth = depth;
     this._includeSnapshotBoxes = boxes;
     this._includeSnapshotRoot = root;
+    this._compactSnapshot = !!interactiveOnly;
   }
 
   async serialize(): Promise<CallToolResult> {
@@ -277,10 +285,23 @@ export class Response {
     if (this._context.config.codegen !== 'none' && this._code.length)
       addSection('Ran Playwright code', this._code, 'js');
 
-    // Render tab titles upon changes or when more than one tab.
+    // Render tab titles upon changes only.
+    //
+    // This block used to also fire whenever a snapshot was attached, which
+    // meant every navigate, click, type and wait reprinted the URL, the title,
+    // the console tallies and (with a second tab open) the whole tab list,
+    // whether or not any of it had moved since the last call. Over a session
+    // that is the single most repeated text in the transcript and none of the
+    // repeats carry information: `headerSnapshot()` already tracks what
+    // changed, so an unchanged header is one the caller has read before.
+    // A caller that wants it back unprompted can call browser_tabs.
+    //
+    // The tab SET is tracked separately from the tab headers, because a tab
+    // that closes leaves no header behind to say so.
     const tabSnapshot = this._context.currentTab() ? await this._context.currentTabOrDie().captureSnapshot(this._includeSnapshotRoot, this._includeSnapshotDepth, this._includeSnapshotBoxes, this._clientWorkspace, this._includeSnapshot !== 'none') : undefined;
     const tabHeaders = await Promise.all(this._context.tabs().map(tab => tab.headerSnapshot()));
-    if (this._includeSnapshot !== 'none' || tabHeaders.some(header => header.changed)) {
+    const tabListChanged = this._context.consumeTabListChanged();
+    if (tabListChanged || tabHeaders.some(header => header.changed)) {
       if (tabHeaders.length !== 1)
         addSection('Open tabs', renderTabsMarkdown(tabHeaders));
       if (tabHeaders.length)
@@ -293,13 +314,17 @@ export class Response {
 
     // Handle tab snapshot
     if (tabSnapshot && this._includeSnapshot !== 'none') {
+      // Filtered here rather than at capture time, so compact mode reduces
+      // what is written to a file exactly as much as what is inlined: the file
+      // is what the caller reads either way.
+      const ariaSnapshot = this._compactSnapshot ? compactAriaSnapshot(tabSnapshot.ariaSnapshot).text : tabSnapshot.ariaSnapshot;
       if (this._includeSnapshot !== 'explicit' || this._includeSnapshotFileName) {
         const suggestedFilename = this._includeSnapshotFileName === '<auto>' ? undefined : this._includeSnapshotFileName;
         const resolvedFile = await this.resolveClientFile({ prefix: 'page', ext: 'yml', suggestedFilename }, 'Snapshot');
-        await this._writeFile(resolvedFile, tabSnapshot.ariaSnapshot);
+        await this._writeFile(resolvedFile, ariaSnapshot);
         addSection('Snapshot', [resolvedFile.printableLink]);
       } else {
-        addSection('Snapshot', [tabSnapshot.ariaSnapshot], 'yaml');
+        addSection('Snapshot', [ariaSnapshot], 'yaml');
       }
     }
 

@@ -46,6 +46,9 @@ test('session log should record tool calls', async ({ startClient, server, mcpBr
     code: `await page.getByRole('button', { name: 'Submit' }).click();`,
   });
 
+  // The click entry carries no `page` block: navigating moved the URL and the
+  // title, clicking moved neither, and an unchanged header is no longer
+  // reprinted on every call.
   const output = stderr().split('\n').filter(line => line.startsWith('Session: '))[0];
   const sessionFolder = output.substring('Session: '.length);
   await expect.poll(() => readSessionLog(sessionFolder)).toMatch(new RegExp(`
@@ -77,7 +80,6 @@ test('session log should record tool calls', async ({ startClient, server, mcpBr
 \\\`\\\`\\\`json
 \\{
   "code": "await page.getByRole\\('button', \\{ name: 'Submit' \\}\\).click\\(\\);",
-  "page": "- Page URL: http://localhost:${server.PORT}/\\\\n- Page Title: Title",
   "snapshot": "- button \\\\"Submit\\\\" \\[active\\] \\[ref=e2\\]"
 \\}
 \\\`\\\`\\\`

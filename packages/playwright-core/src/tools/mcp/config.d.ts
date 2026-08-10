@@ -242,9 +242,11 @@ export type Config = {
 
   snapshot?: {
     /**
-     * When taking snapshots for responses, specifies the mode to use.
+     * When taking snapshots for responses, specifies the mode to use. "interactive" keeps only
+     * the nodes that can be acted on, plus the landmarks and headings around them, and reports
+     * how many nodes it omitted. It is not a way to read page text.
      */
-    mode?: 'full' | 'none';
+    mode?: 'full' | 'none' | 'interactive';
   };
 
   /**
