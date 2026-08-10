@@ -122,16 +122,20 @@ test('the connect page goes away with the session that raised it', async ({ brow
 
   const { client } = await startClient({
     args: ['--extension', `--extension-id=${extensionId}`],
-    clientName: 'picker',
-    env: { PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir },
+    clientName: 'grouped',
+    env: {
+      PWTEST_EXTENSION_USER_DATA_DIR: browserWithExtension.userDataDir,
+      PLAYWRIGHT_MCP_EXTENSION_TOKEN: await readAuthToken(browserContext),
+    },
   });
-  const connectPagePromise = browserContext.waitForEvent('page', page => page.url().startsWith(connectPagePrefix));
-  const navigatePromise = client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
-  const connectPage = await connectPagePromise;
-  // Approve without handing the connect page over as the working tab, so it is
-  // still a connect page when the session ends.
-  await clickAllowAndSelect(connectPage, 'Welcome');
-  expect((await navigatePromise).isError ?? false).toBe(false);
+  // Opening the first page in a *new* tab leaves the connect page as the
+  // connection's other tab, still showing the connect UI when the session ends.
+  const response = await client.callTool({
+    name: 'browser_tabs',
+    arguments: { action: 'new', url: server.HELLO_WORLD },
+  });
+  expect(response.isError ?? false).toBe(false);
+  expect(connectPages(browserContext)).toHaveLength(1);
 
   await client.close();
 
