@@ -59,11 +59,15 @@ type CDPResponse = CDPMessage;
 
 export class CDPRelayServer {
   private _wsHost: string;
+  private _httpHost: string;
   private _browserChannel: string;
   private _executablePath?: string;
   private _extensionId: string;
   private _cdpPath: string;
   private _extensionPath: string;
+  private _alivePath: string;
+  private _server: http.Server;
+  private _onRequest: (request: http.IncomingMessage, response: http.ServerResponse) => void;
   private _wss: WebSocketServer;
   private _cdpConnection: WebSocket | null = null;
   private _extensionConnection: ExtensionConnection | null = null;
@@ -73,6 +77,8 @@ export class CDPRelayServer {
 
   constructor(server: http.Server, browserChannel: string, executablePath?: string, extensionId: string = playwrightExtensionId) {
     this._wsHost = addressToString(server.address(), { protocol: 'ws' });
+    this._httpHost = addressToString(server.address(), { protocol: 'http' });
+    this._server = server;
     this._browserChannel = browserChannel;
     this._executablePath = executablePath;
     this._extensionId = extensionId;
@@ -88,6 +94,15 @@ export class CDPRelayServer {
     const uuid = crypto.randomUUID();
     this._cdpPath = `/cdp/${uuid}`;
     this._extensionPath = `/extension/${uuid}`;
+    this._alivePath = `/alive/${uuid}`;
+
+    // Liveness probe for the connect page. A connect page that is still waiting
+    // for approval holds no socket to this process, so it cannot notice that the
+    // process died and would linger in the browser forever. Answering this route
+    // is the "I am still here" signal; once the process is gone the port stops
+    // accepting and the extension sweeps the orphaned tab.
+    this._onRequest = (request, response) => this._handleHttpRequest(request, response);
+    server.on('request', this._onRequest);
 
     void this._extensionConnectionPromise.catch(logUnhandledError);
     this._wss = new wsServer({ server });
@@ -100,6 +115,25 @@ export class CDPRelayServer {
 
   extensionEndpoint() {
     return `${this._wsHost}${this._extensionPath}`;
+  }
+
+  aliveEndpoint() {
+    return `${this._httpHost}${this._alivePath}`;
+  }
+
+  // Answers only the unguessable per-relay liveness path; anything else on this
+  // server is not ours to serve.
+  private _handleHttpRequest(request: http.IncomingMessage, response: http.ServerResponse) {
+    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+    if (pathname !== this._alivePath) {
+      response.writeHead(404).end();
+      return;
+    }
+    // The connect page fetches this cross-origin from chrome-extension://.
+    response.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store',
+    }).end();
   }
 
   async establishExtensionConnection(clientName: string, clientCwd?: string) {
@@ -115,6 +149,9 @@ export class CDPRelayServer {
     const mcpRelayEndpoint = `${this._wsHost}${this._extensionPath}`;
     const url = new URL(`chrome-extension://${this._extensionId}/connect.html`);
     url.searchParams.set('mcpRelayUrl', mcpRelayEndpoint);
+    // Lets the extension tell "still waiting for approval" apart from "the
+    // client that opened this page is gone".
+    url.searchParams.set('mcpAliveUrl', this.aliveEndpoint());
     const client = {
       name: clientName,
       // Lets the extension label the connection's tab group by workspace.
@@ -157,6 +194,7 @@ export class CDPRelayServer {
 
   stop(): void {
     this._closeConnections('Server stopped');
+    this._server.removeListener('request', this._onRequest);
     this._wss.close();
   }
 

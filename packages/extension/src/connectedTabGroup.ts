@@ -15,6 +15,7 @@
  */
 
 import { RelayConnection, debugLog, isOwnUiUrl } from './relayConnection';
+import { isConnectPageUrl } from './connectPages';
 
 const NON_DEBUGGABLE_SCHEMES = ['chrome:', 'edge:', 'devtools:'];
 const CONNECTED_BADGE = { text: '✓', color: '#4CAF50', title: 'Connected to Fast Browser client' };
@@ -79,6 +80,7 @@ export async function cleanupStalePlaywrightGroups(): Promise<void> {
 export class ConnectedTabGroup {
   private _connection: RelayConnection;
   private _style: GroupStyle;
+  private _connectPageTabId: number;
   private _groupId: number | null = null;
   private _groupTabIds: Set<number> = new Set();
   private _onTabUpdatedListener: (tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void;
@@ -86,9 +88,10 @@ export class ConnectedTabGroup {
 
   onclose?: () => void;
 
-  constructor(connection: RelayConnection, selectedTab: chrome.tabs.Tab, style: GroupStyle) {
+  constructor(connection: RelayConnection, selectedTab: chrome.tabs.Tab, style: GroupStyle, connectPageTabId: number) {
     this._connection = connection;
     this._style = style;
+    this._connectPageTabId = connectPageTabId;
     this._connection.onclose = () => this._onConnectionClose();
     this._connection.ontabattached = (tabId: number) => this._onTabAttached(tabId);
     this._connection.ontabdetached = (tabId: number) => this._onTabDetached(tabId);
@@ -192,7 +195,23 @@ export class ConnectedTabGroup {
         debugLog('Error ungrouping tabs on close:', error);
       });
     }
+    void this._closeConnectPage();
     this.onclose?.();
+  }
+
+  // The connect page is this extension's own scaffolding, so it goes away with
+  // the session that raised it -- whether the client exited cleanly or its
+  // socket simply died. Once the client has navigated that tab somewhere it is
+  // showing real content, and closing it would destroy the user's page rather
+  // than tidy up after ourselves, so the URL check is the whole guard.
+  private async _closeConnectPage(): Promise<void> {
+    try {
+      const tab = await chrome.tabs.get(this._connectPageTabId);
+      if (isConnectPageUrl(tab.url) || isConnectPageUrl(tab.pendingUrl))
+        await chrome.tabs.remove(this._connectPageTabId);
+    } catch {
+      // Already closed, or replaced by the client; nothing to tidy.
+    }
   }
 
   private async _updateBadge(tabId: number, { text, color, title }: { text: string; color?: string, title?: string }): Promise<void> {

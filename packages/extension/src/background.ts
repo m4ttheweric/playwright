@@ -17,6 +17,7 @@
 import { debugLog } from './relayConnection';
 import { PendingConnections } from './pendingConnection';
 import { ConnectedTabGroup, cleanupStalePlaywrightGroups, isNonDebuggableUrl } from './connectedTabGroup';
+import { sweepOrphanedConnectPages } from './connectPages';
 
 import type { GroupStyle } from './connectedTabGroup';
 
@@ -59,11 +60,33 @@ class PlaywrightExtension {
   // Service worker restarts lose all connection state, so any existing
   // Playwright groups are stale. Connections wait on this before reconciling.
   private _cleanupPromise: Promise<void>;
+  // Serializes connect page sweeps so the ~20s keepalive from several open
+  // connect pages does not fan out into concurrent probe storms.
+  private _sweepPromise: Promise<unknown> = Promise.resolve();
 
   constructor() {
     chrome.runtime.onMessage.addListener(this._onMessage.bind(this));
     chrome.action.onClicked.addListener(this._onActionClicked.bind(this));
     this._cleanupPromise = cleanupStalePlaywrightGroups();
+    // A restart means every connect page in the browser predates us, so this
+    // is the moment orphans from dead sessions get collected.
+    this._sweepConnectPages();
+  }
+
+  // Closes connect pages whose client is gone. Liveness is decided by probing
+  // each page's own relay, so a page waiting on a live client survives even
+  // though a restart lost every record of it -- which is exactly the state a
+  // pending connection is in after the service worker cycles. `keepTabId`
+  // shields the page that prompted the sweep, whose relay we just heard from.
+  private _sweepConnectPages(keepTabId?: number): void {
+    const keep = new Set<number>(keepTabId === undefined ? [] : [keepTabId]);
+    for (const connection of this._connections.values()) {
+      for (const tabId of connection.group.connectedTabIds())
+        keep.add(tabId);
+    }
+    this._sweepPromise = this._sweepPromise
+        .then(() => sweepOrphanedConnectPages(keep))
+        .catch(error => debugLog('Error sweeping connect pages:', error));
   }
 
   // Promise-based message handling is not supported in Chrome: https://issues.chromium.org/issues/40753031
@@ -71,6 +94,9 @@ class PlaywrightExtension {
     switch (message.type) {
       case 'connectionRequested':
         this._pendingConnections.create(sender.tab!.id!, message.mcpRelayUrl);
+        // A new session is the natural moment to collect connect pages left
+        // behind by sessions that died without closing theirs.
+        this._sweepConnectPages(sender.tab!.id!);
         sendResponse({ success: true });
         return false;
       case 'getTabs':
@@ -111,6 +137,10 @@ class PlaywrightExtension {
       case 'keepalive':
         // Connect page pings us every ~20s so receiving this message resets
         // the MV3 service worker idle timer and keeps the relay WebSocket alive.
+        // It doubles as the tick that notices a client which died while its
+        // connect page was still waiting for approval -- so the pinging page
+        // is deliberately not shielded here; it is the one under suspicion.
+        this._sweepConnectPages();
         return false;
     }
   }
@@ -132,7 +162,7 @@ class PlaywrightExtension {
         workspace = workspace.slice(0, 23) + '…';
       const label = `${workspace || (clientName === 'unknown' ? undefined : clientName) || 'Fast Browser'} #${id}`;
       const style: GroupStyle = { title: label, color: GROUP_COLORS[(id - 1) % GROUP_COLORS.length] };
-      const group = new ConnectedTabGroup(connection, tab, style);
+      const group = new ConnectedTabGroup(connection, tab, style, selectorTabId);
       group.onclose = () => this._connections.delete(id);
       this._connections.set(id, { id, clientName, label, group });
 
