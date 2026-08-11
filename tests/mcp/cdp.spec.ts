@@ -130,6 +130,37 @@ test('auto-recover when remote browser disconnects mid-session', async ({ cdpSer
   });
 });
 
+test('cdp disconnect mid-call produces a typed SIDECAR_LOST error', async ({ cdpServer, startClient, server }) => {
+  const browserContext = await cdpServer.start();
+  const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining(`Hello, world!`),
+  });
+
+  // Kill the remote browser out from under the live connection, same as
+  // "auto-recover when remote browser disconnects mid-session" above, but
+  // here pinning the shape of the error the disconnected call gets back.
+  await browserContext.close();
+
+  const response = await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+  expect(response).toHaveResponse({
+    isError: true,
+    error: expect.stringContaining('SIDECAR_LOST:'),
+  });
+
+  const errorText = (response.content[0] as { text: string }).text;
+  const shape = JSON.parse(errorText.replace('### Error\nSIDECAR_LOST: ', ''));
+  expect(shape.tool).toBe('browser_navigate');
+  expect(shape.recovery).toContain('restart the flow from navigation');
+});
+
 test('does not support --device', async () => {
   const result = spawnSync('node', [
     ...mcpServerPath, '--device=Pixel 5', '--cdp-endpoint=http://localhost:1234',

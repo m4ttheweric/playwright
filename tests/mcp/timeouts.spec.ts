@@ -76,6 +76,41 @@ test('action timeout (custom)', async ({ startClient, server }) => {
   });
 });
 
+test('action timeout stays an ordinary error, not a cdp-disconnect one', async ({ startClient, server }) => {
+  const { client } = await startClient({ args: [`--timeout-action=1234`] });
+  server.setContent('/', `
+    <!DOCTYPE html>
+    <html>
+      <input readonly></input>
+    </html>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: {
+      url: server.PREFIX,
+    },
+  });
+
+  const response = await client.callTool({
+    name: 'browser_type',
+    arguments: {
+      element: 'textbox',
+      target: 'e2',
+      text: 'Hi!',
+      submit: true,
+    },
+  });
+  expect(response).toHaveResponse({
+    error: expect.stringContaining(`Timeout 1234ms exceeded.`),
+    isError: true,
+  });
+  // An agent must never mistake a selector timeout for a lost CDP connection:
+  // retrying a timed-out selector is the normal (and correct) recovery, while
+  // retrying after a real disconnect produces confidently wrong evidence.
+  expect((response.content[0] as { text: string }).text).not.toContain('SIDECAR_LOST');
+});
+
 test('wait_for text timeout', async ({ startClient, server }) => {
   const { client } = await startClient({ args: [`--timeout-action=1234`] });
   server.setContent('/', `

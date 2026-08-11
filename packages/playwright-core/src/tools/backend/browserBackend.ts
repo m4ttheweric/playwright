@@ -29,6 +29,48 @@ import type { ClientInfo, ServerBackend } from '../utils/mcp/server';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+// A lost CDP connection is a different failure class from a tool call that
+// simply did not work: a reconnected or replaced browser has no page state
+// left, so an agent that retries the call that failed would run it against a
+// blank browser and report confidently wrong evidence. Correct recovery is to
+// restart from navigation, not to retry, so this needs to be distinguishable
+// from an ordinary tool failure (a selector timeout, say) rather than folded
+// into the same error shape.
+//
+// This signature set and the SIDECAR_LOST vocabulary mirror the fast-browser
+// plugin's own flow-runner classifier (builtins/macros/flow-runner.js),
+// which covers compiled flows; this closes the same gap for raw tool calls,
+// which that classifier never sees. Verified against this fork's own
+// TargetClosedError (packages/playwright-core/src/client/errors.ts), whose
+// default message is exactly 'Target page, context or browser has been
+// closed'. 'Browser has been disconnected' is kept even though it never
+// originates in this repo's own source: it is the wording the fast-browser
+// extension relay uses on its side of the sidecar, and a signature set that
+// only matched this fork's half of the failure would defeat the point of
+// keeping the two vocabularies consistent.
+const CDP_DISCONNECT_SIGNATURES = [
+  'Target closed',
+  'Target crashed',
+  'Target page, context or browser has been closed',
+  'Browser has been closed',
+  'Browser closed',
+  'Browser has been disconnected',
+  'WebSocket is not open',
+  'WebSocket error',
+  'Connection closed',
+];
+
+// Anchored to the message's first line only. Playwright's formatCallLog
+// (client/connection.ts) appends a "locator resolved to <previewNode>" line
+// to channel errors, and previewNode renders the target element's own
+// attributes/text verbatim, so matching past the first line would let a page
+// authoring a button labelled "Connection closed" forge a false positive. An
+// ordinary selector timeout must stay an ordinary error.
+function isCdpDisconnect(message: string): boolean {
+  const firstLine = message.split('\n', 1)[0];
+  return CDP_DISCONNECT_SIGNATURES.some(signature => firstLine.includes(signature));
+}
+
 export class BrowserBackend implements ServerBackend {
   private _tools: Tool[];
   private _context: Context | undefined;
@@ -76,6 +118,25 @@ export class BrowserBackend implements ServerBackend {
       content: [{ type: 'text' as const, text: json ? JSON.stringify({ isError: true, error: message }, null, 2) : `### Error\n${message}` }],
       isError: true,
     });
+    // Named endpoints: which MCP tool was in flight (the call an agent must
+    // not retry) and which page it was in flight against (urlBefore, below --
+    // the last URL known good before all of its state was lost). Two fixed
+    // strings joined by JSON.stringify, never assembled from page- or
+    // caller-influenced text, so this stays as auditable as a single fixed
+    // string.
+    const formatCdpDisconnect = (toolName: string, pageUrl: string | undefined, message: string): mcpServer.CallToolResult => {
+      const shape = {
+        tool: toolName,
+        url: pageUrl,
+        message,
+        recovery: 'restart the flow from navigation; do not retry this call',
+      };
+      const text = `SIDECAR_LOST: ${JSON.stringify(shape)}`;
+      return {
+        content: [{ type: 'text' as const, text: json ? JSON.stringify({ isError: true, error: text }, null, 2) : `### Error\n${text}` }],
+        isError: true,
+      };
+    };
     const tool = this._tools.find(tool => tool.schema.name === name)!;
     if (!tool)
       return formatError(`Tool "${name}" not found`);
@@ -119,7 +180,9 @@ export class BrowserBackend implements ServerBackend {
     } catch (error: any) {
       const messages = [String(error), ...context.drainPendingUnhandledRejections().map(formatRejectionReason)];
       traceError = messages.join('\n\n');
-      responseObject = formatError(traceError);
+      responseObject = isCdpDisconnect(String(error))
+        ? formatCdpDisconnect(name, urlBefore, String(error))
+        : formatError(traceError);
     } finally {
       context.setRunningTool(undefined);
       // Tracing is a local side effect, not part of the tool-result contract: a
