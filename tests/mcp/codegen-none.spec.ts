@@ -56,6 +56,23 @@ test('browser_press_key still answers when codegen is on', async ({ client, serv
   });
 });
 
+test('browser_resize answers with something when codegen is off', async ({ startClient, server }) => {
+  const { client } = await startClient({ args: ['--codegen=none'] });
+  server.setContent('/', `<title>T</title><body>hello</body>`, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  const response = await client.callTool({
+    name: 'browser_resize',
+    arguments: { width: 390, height: 780 },
+  });
+
+  expect(response.content[0].text).toBe('### Result\nResized to 390x780');
+});
+
 test('browser_type answers without echoing what was typed', async ({ startClient, server }) => {
   const { client } = await startClient({ args: ['--codegen=none'] });
   server.setContent('/', `<title>T</title><body><input id="i"></body>`, 'text/html');

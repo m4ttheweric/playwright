@@ -83,6 +83,22 @@ connection (`BrowserBackend.initialize`):
 `<epochMs>` is `Date.now()` at session start (`TraceLog.create`), so a
 session that reconnects gets a new trace directory, never an appended one.
 
+### `browser_close` mid-conversation rotates, it does not end the session
+
+`browser_close` finalizes the current trace like any other clean close (its
+`endedAt` gets written, see below) but the MCP connection itself stays open:
+`browser_close`'s handler calls `response.setClose()`, which the transport
+reads as `isClose` on the tool result
+(`packages/playwright-core/src/tools/backend/browserBackend.ts`,
+`packages/playwright-core/src/tools/utils/mcp/server.ts`). The server
+disposes the current `BrowserBackend` and drops its cached backend promise,
+but does not close the MCP transport. The next tool call re-enters
+`initializeServer()`, which constructs a new `BrowserBackend` and calls
+`initialize()` again, and `TraceLog.create()` stamps a fresh `trace-<epochMs>`
+directory for it. From the client's side this is invisible: no MCP
+reconnect, no new session ID, just a new trace directory on disk starting
+at the next dispatched tool call after the close.
+
 ## `meta.json`
 
 Written once at session start, rewritten once at clean close:
