@@ -120,10 +120,15 @@ export class BrowserBackend implements ServerBackend {
     });
     // Named endpoints: which MCP tool was in flight (the call an agent must
     // not retry) and which page it was in flight against (urlBefore, below --
-    // the last URL known good before all of its state was lost). Two fixed
-    // strings joined by JSON.stringify, never assembled from page- or
-    // caller-influenced text, so this stays as auditable as a single fixed
-    // string.
+    // the last URL known good before all of its state was lost).
+    //
+    // Only the `SIDECAR_LOST: ` prefix and the recovery sentence are fixed;
+    // `tool` is caller-supplied and `url`/`message` both carry page-influenced
+    // text, exactly the text isCdpDisconnect refuses to match past the first
+    // line of. That is safe here for a different reason than it is there:
+    // JSON.stringify escapes what it embeds, so a page cannot close the object
+    // early and forge a different shape for whoever parses this. It travels as
+    // data inside the envelope, never as part of the envelope.
     const formatCdpDisconnect = (toolName: string, pageUrl: string | undefined, message: string): mcpServer.CallToolResult => {
       const shape = {
         tool: toolName,
@@ -131,11 +136,7 @@ export class BrowserBackend implements ServerBackend {
         message,
         recovery: 'restart the flow from navigation; do not retry this call',
       };
-      const text = `SIDECAR_LOST: ${JSON.stringify(shape)}`;
-      return {
-        content: [{ type: 'text' as const, text: json ? JSON.stringify({ isError: true, error: text }, null, 2) : `### Error\n${text}` }],
-        isError: true,
-      };
+      return formatError(`SIDECAR_LOST: ${JSON.stringify(shape)}`);
     };
     const tool = this._tools.find(tool => tool.schema.name === name)!;
     if (!tool)
