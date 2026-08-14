@@ -83,6 +83,11 @@ export class ConnectedTabGroup {
   private _connectPageTabId: number;
   private _groupId: number | null = null;
   private _groupTabIds: Set<number> = new Set();
+  // Tabs this session brought into being (relay chrome.tabs.create, popups
+  // from controlled pages), as opposed to tabs the user selected or dragged
+  // in. Session-created tabs close with a cleanly-ended session (FB-59);
+  // user tabs are only ever ungrouped.
+  private _sessionCreatedTabIds: Set<number> = new Set();
   private _onTabUpdatedListener: (tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void;
   private _onTabRemovedListener: (tabId: number) => void;
 
@@ -92,9 +97,10 @@ export class ConnectedTabGroup {
     this._connection = connection;
     this._style = style;
     this._connectPageTabId = connectPageTabId;
-    this._connection.onclose = () => this._onConnectionClose();
+    this._connection.onclose = (clean: boolean) => this._onConnectionClose(clean);
     this._connection.ontabattached = (tabId: number) => this._onTabAttached(tabId);
     this._connection.ontabdetached = (tabId: number) => this._onTabDetached(tabId);
+    this._connection.ontabcreated = (tabId: number) => this._sessionCreatedTabIds.add(tabId);
     this._onTabUpdatedListener = this._onTabUpdated.bind(this);
     this._onTabRemovedListener = this._onTabRemoved.bind(this);
     chrome.tabs.onUpdated.addListener(this._onTabUpdatedListener);
@@ -154,6 +160,7 @@ export class ConnectedTabGroup {
 
   private _onTabRemoved(tabId: number): void {
     this._groupTabIds.delete(tabId);
+    this._sessionCreatedTabIds.delete(tabId);
   }
 
   private _onTabAttached(tabId: number): void {
@@ -190,13 +197,27 @@ export class ConnectedTabGroup {
     }
   }
 
-  private _onConnectionClose(): void {
+  private _onConnectionClose(clean: boolean): void {
     chrome.tabs.onUpdated.removeListener(this._onTabUpdatedListener);
     chrome.tabs.onRemoved.removeListener(this._onTabRemovedListener);
     const groupTabs = [...this._groupTabIds];
     this._groupTabIds.clear();
-    if (groupTabs.length) {
-      this._retryOnDrag(() => chrome.tabs.ungroup(groupTabs)).catch(error => {
+    // Chrome's "started debugging" infobar sticks to each debugged tab until
+    // the tab closes or the user dismisses it (FB-59). Tabs this session
+    // created are its scaffolding, like the connect page below: on a clean
+    // end they close, taking their dead banners with them. Tabs the user
+    // brought in are only ungrouped. An unclean drop preserves everything --
+    // the user may still want those pages after a crash.
+    const toClose = clean ? groupTabs.filter(id => this._sessionCreatedTabIds.has(id)) : [];
+    const toUngroup = groupTabs.filter(id => !this._sessionCreatedTabIds.has(id) || !clean);
+    this._sessionCreatedTabIds.clear();
+    if (toClose.length) {
+      chrome.tabs.remove(toClose).catch(error => {
+        debugLog('Error closing session-created tabs on close:', error);
+      });
+    }
+    if (toUngroup.length) {
+      this._retryOnDrag(() => chrome.tabs.ungroup(toUngroup)).catch(error => {
         debugLog('Error ungrouping tabs on close:', error);
       });
     }
