@@ -55,11 +55,23 @@ const ALLOWED_CHROME_COMMANDS = new Set([
   'chrome.tabs.remove',
 ]);
 
-// How long an involuntary detach of the last attached tab waits for a
-// successor to be re-attached before the connection is closed. Long enough to
-// cover the attach round-trip through the relay, short enough that a session
-// that really is over ends promptly.
-const kReattachGraceMs = 1000;
+// How long an involuntarily detached tab that still exists is watched for a
+// comeback before the connection is closed. A page that replaces or reloads
+// itself mid-interaction (an anti-bot challenge that reloads after solving,
+// FB-58) detaches the debugger for several seconds; as long as the tab is in
+// the strip, the session is recoverable and must not be torn down under it.
+const kDetachedTabWatchMs = 10_000;
+
+// How long a genuine removal of the last watched tab waits for a successor to
+// be re-attached before the connection is closed. Covers the attach
+// round-trip for a replacement tab (Memory Saver discard, window.open +
+// window.close) while ending a really-over session promptly.
+const kRemovedTabGraceMs = 1000;
+
+export type RelayTimings = {
+  detachedTabWatchMs?: number;
+  removedTabGraceMs?: number;
+};
 
 // chrome.* events the extension forwards to the relay (positional params).
 const CHROME_EVENT_METHODS = [
@@ -77,6 +89,12 @@ export class RelayConnection {
   private _hasEverAttached = false;
   private _eventListeners: Array<{ remove: () => void }> = [];
   private _closed = false;
+  // Tabs that detached involuntarily and still exist as far as we know; each
+  // may come back (reload finishing, discard successor) and cancel the close.
+  private _watchedTabs = new Set<number>();
+  private _closeTimer: ReturnType<typeof setTimeout> | undefined;
+  private _detachedTabWatchMs: number;
+  private _removedTabGraceMs: number;
 
   onclose?: () => void;
   ontabattached?: (tabId: number) => void;
@@ -86,8 +104,10 @@ export class RelayConnection {
     return this._attachedTabs;
   }
 
-  constructor(ws: WebSocket) {
+  constructor(ws: WebSocket, timings: RelayTimings = {}) {
     this._ws = ws;
+    this._detachedTabWatchMs = timings.detachedTabWatchMs ?? kDetachedTabWatchMs;
+    this._removedTabGraceMs = timings.removedTabGraceMs ?? kRemovedTabGraceMs;
     this._installEventForwarders();
     this._ws.onmessage = this._onMessage.bind(this);
     this._ws.onclose = () => this._onClose();
@@ -140,6 +160,8 @@ export class RelayConnection {
   private _notifyTabAttached(tabId: number): void {
     this._attachedTabs.add(tabId);
     this._hasEverAttached = true;
+    this._watchedTabs.delete(tabId);
+    this._clearCloseTimer();
     this.ontabattached?.(tabId);
   }
 
@@ -163,6 +185,8 @@ export class RelayConnection {
     if (this._closed)
       return;
     this._closed = true;
+    this._clearCloseTimer();
+    this._watchedTabs.clear();
     for (const l of this._eventListeners)
       l.remove();
     this._eventListeners = [];
@@ -180,33 +204,68 @@ export class RelayConnection {
       this.close('All controlled tabs detached');
   }
 
-  // Chrome detached the debugger on its own -- the tab was discarded under
-  // Memory Saver, the target was replaced, the renderer went away. That is not
-  // a request to end the session, and treating it as one loses every tab the
-  // client had open. Give ConnectedTabGroup a beat to re-attach whatever is
-  // still in the group (a discarded tab comes back under a *new* tab id) and
-  // only tear the connection down if nothing is left to drive.
-  private _checkLastTabDetachedAfterGrace(): void {
-    if (this._closed || !this._hasEverAttached || this._attachedTabs.size > 0)
+  // Chrome detached the debugger on its own -- the page reloaded or replaced
+  // its document, the tab was discarded under Memory Saver, the renderer went
+  // away. That is not a request to end the session, and treating it as one
+  // loses every tab the client had open. Watch the tab: a reload finishing
+  // re-attaches through ConnectedTabGroup (via tabs.onUpdated) and cancels the
+  // close; only a genuine removal (handled in _onChromeEvent) or the watch
+  // expiring with nothing attached ends the session.
+  private _watchDetachedTab(tabId: number): void {
+    if (this._closed || !this._hasEverAttached)
       return;
-    setTimeout(() => {
+    this._watchedTabs.add(tabId);
+    if (this._attachedTabs.size > 0)
+      return;
+    this._armCloseTimer(this._detachedTabWatchMs);
+  }
+
+  // A watched tab is gone for real. If that leaves nothing attached and
+  // nothing to watch, the session is over -- after a short grace, because a
+  // removal can have an in-flight successor (a discard resurfacing under a
+  // new tab id, window.open + window.close replacement).
+  private _onWatchedTabRemoved(tabId: number): void {
+    this._watchedTabs.delete(tabId);
+    if (this._closed || this._attachedTabs.size > 0 || this._watchedTabs.size > 0)
+      return;
+    this._armCloseTimer(this._removedTabGraceMs);
+  }
+
+  // One shared timer: the latest deadline wins, and any successful attach
+  // clears it. The callback re-checks liveness so a stale fire is harmless.
+  private _armCloseTimer(ms: number): void {
+    this._clearCloseTimer();
+    this._closeTimer = setTimeout(() => {
       if (this._closed || this._attachedTabs.size > 0)
         return;
       this.close('All controlled tabs detached');
-    }, kReattachGraceMs);
+    }, ms);
+  }
+
+  private _clearCloseTimer(): void {
+    if (this._closeTimer === undefined)
+      return;
+    clearTimeout(this._closeTimer);
+    this._closeTimer = undefined;
   }
 
   // Forwards chrome.* events concerning attached tabs to the relay, then runs
   // shared detach bookkeeping.
   private _onChromeEvent(fullMethod: string, args: any[]): void {
     const tabId = this._tabIdForEventArgs(fullMethod, args);
-    if (tabId === undefined || !this._attachedTabs.has(tabId))
+    if (tabId === undefined)
+      return;
+    // A watched tab is no longer attached, so it fails the filter below; its
+    // removal still matters to the close policy.
+    if (fullMethod === 'chrome.tabs.onRemoved' && this._watchedTabs.has(tabId))
+      this._onWatchedTabRemoved(tabId);
+    if (!this._attachedTabs.has(tabId))
       return;
     this._sendMessage({ method: fullMethod, params: args });
     // chrome.debugger.onDetach is the single source of truth for detach bookkeeping.
     if (fullMethod === 'chrome.debugger.onDetach') {
       this._notifyTabDetached(tabId);
-      this._checkLastTabDetachedAfterGrace();
+      this._watchDetachedTab(tabId);
     }
   }
 

@@ -124,7 +124,7 @@ test('an involuntary detach of the last tab does not close the session immediate
   connection.close('cleanup');
 });
 
-test('an involuntary detach still closes the session when nothing is left to reattach', async () => {
+test('an involuntary detach still closes the session when the tab is genuinely removed', async () => {
   const RelayConnection = await loadRelayConnection();
   const mock = installChromeMock();
   const socket = new FakeSocket();
@@ -132,9 +132,59 @@ test('an involuntary detach still closes the session when nothing is left to rea
 
   await attachTab(socket, 42);
   mock.debugger.onDetach.fire({ tabId: 42 }, 'target_closed');
+  mock.tabs.onRemoved.fire(42);
   await wait(kGraceMs + 500);
 
-  assert.ok(socket.closed, 'a session with no surviving tab should still end');
+  assert.ok(socket.closed, 'a session whose last tab is gone for real should still end');
+});
+
+// FB-58: an anti-bot page (Anubis-style proof-of-work) reloads itself after
+// the challenge. The reload detaches the debugger, but the tab is still right
+// there in the strip, loading the real page. A 1-second deadline loses that
+// race; only genuine removal or a much longer watch expiry may end the
+// session while the tab exists.
+test('an involuntary detach of a tab that still exists outlives the old 1s grace', async () => {
+  const RelayConnection = await loadRelayConnection();
+  const mock = installChromeMock();
+  const socket = new FakeSocket();
+  const connection = new RelayConnection(socket);
+
+  await attachTab(socket, 42);
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'target_closed');
+  await wait(kGraceMs + 500);
+
+  assert.equal(socket.closed, null, 'a detached-but-present tab must get more than 1s to come back');
+  connection.close('cleanup');
+});
+
+test('the watch expires when the detached tab never comes back', async () => {
+  const RelayConnection = await loadRelayConnection();
+  const mock = installChromeMock();
+  const socket = new FakeSocket();
+  new RelayConnection(socket, { detachedTabWatchMs: 2000 });
+
+  await attachTab(socket, 42);
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'target_closed');
+  await wait(1500);
+  assert.equal(socket.closed, null, 'the watch must still be open at 1.5s');
+  await wait(1000);
+  assert.ok(socket.closed, 'an expired watch with nothing attached should end the session');
+});
+
+test('a reattach late in the watch, past the old grace, cancels the close', async () => {
+  const RelayConnection = await loadRelayConnection();
+  const mock = installChromeMock();
+  const socket = new FakeSocket();
+  const connection = new RelayConnection(socket, { detachedTabWatchMs: 2000 });
+
+  await attachTab(socket, 42);
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'target_closed');
+  await wait(kGraceMs + 200);
+  await attachTab(socket, 42, 2);
+  await wait(1500);
+
+  assert.equal(socket.closed, null, 'a tab that came back during the watch must keep the session alive');
+  connection.close('cleanup');
 });
 
 test('reattaching a successor within the grace keeps the session alive', async () => {
