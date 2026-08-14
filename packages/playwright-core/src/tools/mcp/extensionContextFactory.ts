@@ -44,10 +44,14 @@ export async function createExtensionBrowser(channel: string, executablePath: st
 
   try {
     await relay.establishExtensionConnection(clientName, clientCwd);
-    return await playwright.chromium.connectOverCDP(relay.cdpEndpoint(), { isLocal: true, timeout: 0, recordVideo });
+    const browser = await playwright.chromium.connectOverCDP(relay.cdpEndpoint(), { isLocal: true, timeout: 0, recordVideo });
+    // The relay has no life beyond this browser connection. Without this, a
+    // relay whose extension side died kept its port listening forever, one
+    // leaked port and one falsely-alive Welcome tab per crash cycle (FB-58).
+    browser.on('disconnected', () => relay.stop());
+    return browser;
   } catch (error) {
     relay.stop();
-    httpServer.close();
     throw error;
   }
 }
