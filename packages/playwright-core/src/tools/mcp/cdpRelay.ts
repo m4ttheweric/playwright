@@ -67,6 +67,7 @@ export class CDPRelayServer {
   private _extensionPath: string;
   private _alivePath: string;
   private _server: http.Server;
+  private _stopped = false;
   private _onRequest: (request: http.IncomingMessage, response: http.ServerResponse) => void;
   private _wss: WebSocketServer;
   private _cdpConnection: WebSocket | null = null;
@@ -193,9 +194,16 @@ export class CDPRelayServer {
   }
 
   stop(): void {
+    if (this._stopped)
+      return;
+    this._stopped = true;
     this._closeConnections('Server stopped');
     this._server.removeListener('request', this._onRequest);
     this._wss.close();
+    // The relay owns its HTTP server for its whole life. Leaving it listening
+    // leaked one port per relay-crash cycle and kept the stale connect page's
+    // liveness probe answering, which made a dead session look alive (FB-58).
+    this._server.close();
   }
 
   private _closeConnections(reason: string) {

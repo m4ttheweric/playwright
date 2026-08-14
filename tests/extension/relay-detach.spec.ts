@@ -154,6 +154,22 @@ test(`session survives 40s of periodic activity`, async ({ startExtensionClient,
 // relay-policy.node.test.mjs, which drives RelayConnection against a fake
 // chrome and does not need a browser at all.
 
+// FB-58: an anti-bot challenge page reloads itself to the same url after
+// solving. Whatever that does to the debugger, the session must survive the
+// reload and answer the next call. The delay puts the reload past the old 1s
+// reattach grace so a regression to timer-racing recovery fails here.
+test(`a page that reloads itself keeps the session alive`, async ({ startExtensionClient, server }) => {
+  server.setContent('/step-one', `<title>StepOne</title><body><button>go</button><script>setTimeout(() => location.reload(), 1500)</script></body>`, 'text/html');
+  const { browserContext, client } = await startExtensionClient();
+  await connectAndNavigate(browserContext, client, server.PREFIX + '/step-one');
+
+  // Cover the reload landing before, during, and after: probe past it.
+  await new Promise(resolve => setTimeout(resolve, 4000));
+
+  const { alive, detail } = await sessionIsAlive(client);
+  expect(alive, `probe after self-reload: ${detail}`).toBe(true);
+});
+
 // The suspected trigger: the tab the relay is attached to goes away entirely.
 // Chrome fires onDetach with target_closed, _checkLastTabDetached sees an empty
 // set, and the whole relay is torn down even though a successor tab exists.

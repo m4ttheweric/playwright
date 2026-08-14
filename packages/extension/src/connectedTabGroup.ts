@@ -118,12 +118,17 @@ export class ConnectedTabGroup {
   private _onTabUpdated(tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab): void {
     if (changeInfo.groupId !== undefined)
       this._onTabGroupChanged(tabId, tab);
-    if (changeInfo.url === undefined)
+    // A same-url reload (an anti-bot challenge reloading after it solves,
+    // FB-58) surfaces here with only a `status` change -- `url` is present
+    // only when it changed. Both shapes mean the tab is making load progress,
+    // which is the re-attach cue for a group tab Chrome detached.
+    if (changeInfo.url === undefined && changeInfo.status === undefined)
       return;
+    const url = changeInfo.url ?? tab.url;
     // Chrome resets per-tab badge state on navigation, so re-apply it.
     if (this._connection.attachedTabs.has(tabId))
       void this._updateBadge(tabId, CONNECTED_BADGE);
-    else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(changeInfo.url) && !isOwnUiUrl(changeInfo.url))
+    else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(url) && !isOwnUiUrl(url))
       this._connection.attachTab(tab);
   }
 
