@@ -1,6 +1,6 @@
 {
   "name": "@playwright/extension",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Playwright Browser Extension",
   "private": true,
   "repository": {
