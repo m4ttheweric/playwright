@@ -96,9 +96,14 @@ export class RelayConnection {
   private _detachedTabWatchMs: number;
   private _removedTabGraceMs: number;
 
-  onclose?: () => void;
+  // `clean` is true when the session ended on purpose (local close() or a
+  // normal-closure frame from the relay), false when the socket just died.
+  onclose?: (clean: boolean) => void;
   ontabattached?: (tabId: number) => void;
   ontabdetached?: (tabId: number) => void;
+  // A tab came into being because of this session: the relay created it, or
+  // a controlled page opened it as a popup.
+  ontabcreated?: (tabId: number) => void;
 
   get attachedTabs(): ReadonlySet<number> {
     return this._attachedTabs;
@@ -110,7 +115,7 @@ export class RelayConnection {
     this._removedTabGraceMs = timings.removedTabGraceMs ?? kRemovedTabGraceMs;
     this._installEventForwarders();
     this._ws.onmessage = this._onMessage.bind(this);
-    this._ws.onclose = () => this._onClose();
+    this._ws.onclose = (event: CloseEvent) => this._onClose(event?.code === 1000);
   }
 
   // Signals the end of the initial-tab handshake — call after the initial
@@ -125,7 +130,7 @@ export class RelayConnection {
     this._ws.close(1000, message);
     // ws.onclose is called asynchronously, so we call it here to avoid forwarding
     // CDP events to the closed connection.
-    this._onClose();
+    this._onClose(true);
   }
 
   // Called when the UI adds a tab to the Playwright group, whether as the
@@ -181,7 +186,7 @@ export class RelayConnection {
     }
   }
 
-  private _onClose() {
+  private _onClose(clean: boolean) {
     if (this._closed)
       return;
     this._closed = true;
@@ -194,7 +199,7 @@ export class RelayConnection {
       chrome.debugger.detach({ tabId }).catch(() => {});
       this._notifyTabDetached(tabId);
     }
-    this.onclose?.();
+    this.onclose?.(clean);
   }
 
   // The user pulled the last tab out of the group, so the session is over by
@@ -267,6 +272,13 @@ export class RelayConnection {
       this._notifyTabDetached(tabId);
       this._watchDetachedTab(tabId);
     }
+    // A forwarded onCreated passed the attached-opener filter above, so this
+    // is a popup a controlled page opened: the session brought it into being.
+    if (fullMethod === 'chrome.tabs.onCreated') {
+      const created = (args[0] as chrome.tabs.Tab).id;
+      if (created !== undefined)
+        this.ontabcreated?.(created);
+    }
   }
 
   // Returns the tabId an event refers to, for filtering by _attachedTabs.
@@ -327,6 +339,11 @@ export class RelayConnection {
       const target = args[0] as chrome.debugger.Debuggee | undefined;
       if (target?.tabId !== undefined)
         this._notifyTabAttached(target.tabId);
+    }
+    if (message.method === 'chrome.tabs.create') {
+      const tab = result as chrome.tabs.Tab | undefined;
+      if (tab?.id !== undefined)
+        this.ontabcreated?.(tab.id);
     }
     return result ?? {};
   }
