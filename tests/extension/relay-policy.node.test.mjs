@@ -215,3 +215,51 @@ test('a deliberate detachTab of the last tab closes the session at once', async 
 
   assert.ok(socket.closed, 'pulling the last tab out of the group is a request to end the session');
 });
+
+// FB-60. Chrome's "started debugging this browser" infobar is shared by every
+// client host of the extension, and its X detaches all of them with
+// `canceled_by_user`. Treating that like an incidental detach re-attaches
+// against the user's explicit request -- and since Chrome destroys the infobar
+// along with the last detach, every re-attach mints a fresh banner. That is the
+// endless stack of banners the X never clears.
+test('a canceled_by_user detach ends the session at once', async () => {
+  const RelayConnection = await loadRelayConnection();
+  const mock = installChromeMock();
+  const socket = new FakeSocket();
+  new RelayConnection(socket);
+
+  await attachTab(socket, 42);
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'canceled_by_user');
+
+  assert.ok(socket.closed, 'dismissing the debugging banner is a request to stop debugging');
+});
+
+// The watch is what keeps a detached tab eligible for re-attachment. A user
+// cancel must not arm it, or the session lingers waiting to come back.
+test('a canceled_by_user detach does not wait out the reattach watch', async () => {
+  const RelayConnection = await loadRelayConnection();
+  const mock = installChromeMock();
+  const socket = new FakeSocket();
+  new RelayConnection(socket, { detachedTabWatchMs: 60_000 });
+
+  await attachTab(socket, 42);
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'canceled_by_user');
+  await wait(50);
+
+  assert.ok(socket.closed, 'a user cancel must not be held open by the reattach watch');
+});
+
+// One cancelled tab is the user speaking for the whole session: Chrome has
+// already detached every tab this client held.
+test('a canceled_by_user detach of one tab ends a multi-tab session', async () => {
+  const RelayConnection = await loadRelayConnection();
+  const mock = installChromeMock();
+  const socket = new FakeSocket();
+  new RelayConnection(socket);
+
+  await attachTab(socket, 42);
+  await attachTab(socket, 43, 2);
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'canceled_by_user');
+
+  assert.ok(socket.closed, 'the banner covers the whole client, not one tab');
+});

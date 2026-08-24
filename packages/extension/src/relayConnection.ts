@@ -269,6 +269,14 @@ export class RelayConnection {
     this._sendMessage({ method: fullMethod, params: args });
     // chrome.debugger.onDetach is the single source of truth for detach bookkeeping.
     if (fullMethod === 'chrome.debugger.onDetach') {
+      // Chrome's "started debugging" infobar is shared by every client host of
+      // this extension and its X detaches all of them with `canceled_by_user`.
+      // Chrome destroys the infobar along with that last detach, so any
+      // re-attach mints a replacement banner the X can never get ahead of.
+      if (args[1] === 'canceled_by_user') {
+        this.close('User dismissed the Chrome debugging banner');
+        return;
+      }
       this._notifyTabDetached(tabId);
       this._watchDetachedTab(tabId);
     }

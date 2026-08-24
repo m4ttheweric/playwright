@@ -202,3 +202,47 @@ test('a status-only onUpdated for a non-debuggable url does not attach', async (
       'a chrome:// tab must not be attached on load progress');
   connection.close('cleanup');
 });
+
+// FB-60. The same re-attach paths that rescue a reload must stay out of the way
+// when the user dismisses Chrome's debugging banner. Each re-attach there mints
+// a replacement banner, so the X can never win.
+test('a canceled_by_user detach does not re-attach the group tabs', async () => {
+  const { ConnectedTabGroup, RelayConnection } = await loadClasses();
+  const tab = { id: 42, url: 'https://shop.example/checkout', groupId: 1 };
+  const mock = installChromeMock([tab]);
+  const socket = new FakeSocket();
+  const connection = new RelayConnection(socket);
+  new ConnectedTabGroup(connection, tab, { title: 'FB', color: 'blue' }, 999);
+  await completeAttach(socket, 42);
+  socket.sent.length = 0;
+
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'canceled_by_user');
+  await settle();
+
+  assert.equal(
+      attachRequestsFor(socket, 42).length, 0,
+      'dismissing the banner must not be answered with a fresh attach');
+});
+
+// The second revival path: even once the session is over, a group tab making
+// load progress used to be enough to request an attach.
+test('a navigation after a canceled_by_user detach does not revive the session', async () => {
+  const { ConnectedTabGroup, RelayConnection } = await loadClasses();
+  const tab = { id: 42, url: 'https://shop.example/checkout', groupId: 1 };
+  const mock = installChromeMock([tab]);
+  const socket = new FakeSocket();
+  const connection = new RelayConnection(socket);
+  new ConnectedTabGroup(connection, tab, { title: 'FB', color: 'blue' }, 999);
+  await completeAttach(socket, 42);
+
+  mock.debugger.onDetach.fire({ tabId: 42 }, 'canceled_by_user');
+  await settle();
+  socket.sent.length = 0;
+
+  mock.tabs.onUpdated.fire(42, { status: 'complete' }, tab);
+  await settle();
+
+  assert.equal(
+      attachRequestsFor(socket, 42).length, 0,
+      'a cancelled session must stay cancelled across a navigation');
+});
