@@ -31,7 +31,14 @@ const builderUrl = pathToFileURL(path.join(rootDir, 'utils/fast_browser/build_ar
 type ArtifactBuilder = {
   buildArtifacts: (options: { productVersion: string, outDir: string }) => void,
   packagePreparedArtifacts: (
-    options: { productVersion: string, outDir: string, repositoryRoot: string, sourceCommit: string },
+    options: {
+      productVersion: string,
+      outDir: string,
+      repositoryRoot: string,
+      sourceCommit: string,
+      crxKeyPath?: string,
+      releaseRepository?: string,
+    },
     dependencies?: {
       renameSync?: typeof fs.renameSync,
       onTransactionBoundary?: (boundary: string) => void,
@@ -43,9 +50,27 @@ type ArtifactBuilder = {
     repositoryRoot: string,
     dependencies?: { runBuild?: (repositoryRoot: string) => void },
   ) => string,
+  resolveCrxKeyPath: (crxKeyPath?: string) => string,
   resolveOutputDirectory: (outDir: string) => string,
   verifyRepositoryProvenance: (repositoryRoot: string, sourceCommit: string) => void,
 };
+
+// A throwaway key, generated per run: these tests assert the CRX structure and
+// that its id is the one the manifest declares, never that the release key
+// signed anything. The release key lives outside the repository and is read
+// only by a real release build.
+function createTestSigningKey(): { path: string, extensionId: string } {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-crx-key-')), 'signing.pem');
+  fs.writeFileSync(file, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string, { mode: 0o600 });
+  const der = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+  const digest = crypto.createHash('sha256').update(der).digest().subarray(0, 16);
+  const alphabet = 'abcdefghijklmnop';
+  return {
+    path: file,
+    extensionId: [...digest].map(byte => alphabet[byte >> 4] + alphabet[byte & 15]).join(''),
+  };
+}
 
 async function loadArtifactBuilder(): Promise<ArtifactBuilder> {
   return await import(builderUrl) as ArtifactBuilder;
@@ -142,7 +167,7 @@ test('builds self-contained Fast Browser artifacts', async () => {
     protocolVersion: 2,
     runtime: { node: '>=20' },
   });
-  for (const artifact of [release.runtime, release.extension]) {
+  for (const artifact of [release.runtime, release.extension, release.extension.crx]) {
     const bytes = fs.readFileSync(path.join(outDir, artifact.file));
     expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(artifact.sha256);
   }
@@ -221,6 +246,132 @@ test('extension archive carries all applicable license notices', async () => {
   }
 });
 
+// Chromium reads a CRX₃ as: "Cr24", a little-endian format version, a
+// little-endian header length, that many octets of CrxFileHeader, then the
+// ZIP. Every proof in the header signs
+// "CRX3 SignedData\x00" + header size + signed_header_data + archive.
+// Re-deriving all of that here is the structural stand-in for installing the
+// file: a packing mistake shows up as a length, a parse or a signature that
+// does not reconcile, rather than as a silent Chrome rejection.
+function readCrx(file: string) {
+  const bytes = fs.readFileSync(file);
+  expect(bytes.subarray(0, 4).toString('utf8')).toBe('Cr24');
+  expect(bytes.readUInt32LE(4)).toBe(3);
+  const headerLength = bytes.readUInt32LE(8);
+  const header = bytes.subarray(12, 12 + headerLength);
+  const archive = bytes.subarray(12 + headerLength);
+
+  // Minimal length-delimited protobuf reader: the header only ever carries
+  // field 2 (sha256_with_rsa) and field 10000 (signed_header_data).
+  const fields = (buffer: Buffer) => {
+    const found = new Map<number, Buffer[]>();
+    let offset = 0;
+    while (offset < buffer.length) {
+      let tag = 0;
+      let shift = 0;
+      let byte = 0;
+      do {
+        byte = buffer[offset++];
+        tag |= (byte & 0x7f) << shift;
+        shift += 7;
+      } while (byte & 0x80);
+      expect(tag & 7).toBe(2);
+      let length = 0;
+      shift = 0;
+      do {
+        byte = buffer[offset++];
+        length |= (byte & 0x7f) << shift;
+        shift += 7;
+      } while (byte & 0x80);
+      const value = buffer.subarray(offset, offset + length);
+      offset += length;
+      found.set(tag >>> 3, [...(found.get(tag >>> 3) ?? []), value]);
+    }
+    expect(offset).toBe(buffer.length);
+    return found;
+  };
+
+  const headerFields = fields(header);
+  const proofs = headerFields.get(2) ?? [];
+  expect(proofs).toHaveLength(1);
+  const proof = fields(proofs[0]);
+  const signedHeaderData = (headerFields.get(10000) ?? [])[0];
+  expect(signedHeaderData).toBeDefined();
+  return {
+    archive,
+    publicKey: (proof.get(1) ?? [])[0],
+    signature: (proof.get(2) ?? [])[0],
+    crxId: (fields(signedHeaderData).get(1) ?? [])[0],
+    signedHeaderData,
+  };
+}
+
+function extensionIdFromPublicKey(publicKey: Buffer) {
+  const alphabet = 'abcdefghijklmnop';
+  const digest = crypto.createHash('sha256').update(publicKey).digest().subarray(0, 16);
+  return [...digest].map(byte => alphabet[byte >> 4] + alphabet[byte & 15]).join('');
+}
+
+test('packs a signed CRX and an update manifest naming it', async () => {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-'));
+  const version = '0.1.0-test.crx';
+  await buildArtifacts(outDir, version);
+  const release = JSON.parse(fs.readFileSync(path.join(outDir, `fast-browser-release-${version}.json`), 'utf8'));
+  expect(release.extension.crx.file).toBe(`fast-browser-extension-${version}.crx`);
+
+  const crx = readCrx(path.join(outDir, release.extension.crx.file));
+  expect(crx.crxId).toEqual(crypto.createHash('sha256').update(crx.publicKey).digest().subarray(0, 16));
+  expect(extensionIdFromPublicKey(crx.publicKey)).toBe(release.extension.id);
+
+  const signedHeaderSize = Buffer.alloc(4);
+  signedHeaderSize.writeUInt32LE(crx.signedHeaderData.length, 0);
+  const verified = crypto.createVerify('sha256')
+      .update(Buffer.from('CRX3 SignedData\x00', 'utf8'))
+      .update(signedHeaderSize)
+      .update(crx.signedHeaderData)
+      .update(crx.archive)
+      .verify(crypto.createPublicKey({ key: crx.publicKey, format: 'der', type: 'spki' }), crx.signature);
+  expect(verified).toBe(true);
+
+  // The payload must be the extension zip verbatim, so the CRX and the
+  // unpacked install are the same bytes under two delivery mechanisms.
+  expect(crx.archive).toEqual(fs.readFileSync(path.join(outDir, release.extension.file)));
+  const payload = path.join(outDir, 'crx-payload.zip');
+  fs.writeFileSync(payload, crx.archive);
+  const entries = execFileSync('unzip', ['-Z1', payload], { encoding: 'utf8' }).trim().split('\n');
+  expect(entries).toContain('manifest.json');
+  expect(JSON.parse(execFileSync('unzip', ['-p', payload, 'manifest.json'], { encoding: 'utf8' })).version)
+      .toBe(release.extension.version);
+
+  const updateXml = fs.readFileSync(path.join(outDir, 'update.xml'), 'utf8');
+  expect(updateXml).toContain(`<app appid="${release.extension.id}">`);
+  expect(updateXml).toContain(
+      `codebase="https://github.com/m4ttheweric/playwright/releases/download/fast-browser-v${version}/${release.extension.crx.file}"`);
+  expect(updateXml).toContain(`version="${release.extension.version}"`);
+});
+
+test('refuses to pack when the signing key and the manifest key disagree', async () => {
+  const key = createTestSigningKey();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-browser-artifacts-'));
+  const builder = await loadArtifactBuilder();
+
+  expect(() => builder.packagePreparedArtifacts({
+    productVersion: '0.1.0-test.key-mismatch',
+    outDir,
+    repositoryRoot: rootDir,
+    sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding: 'utf8' }).trim(),
+    crxKeyPath: key.path,
+  }, { verifyProvenance: () => {} })).toThrow(`signing key derives extension id ${key.extensionId}`);
+  expect(fs.readdirSync(outDir)).toEqual([]);
+});
+
+test('names the signing key it could not find', async () => {
+  const builder = await loadArtifactBuilder();
+  const missing = path.join(os.tmpdir(), 'fast-browser-absent-signing-key.pem');
+
+  expect(() => builder.resolveCrxKeyPath(missing)).toThrow(`CRX signing key not found at ${missing}`);
+});
+
 test('production builder performs reproducible fresh builds from a clean repository', () => {
   test.setTimeout(120_000);
   const repository = createCleanProductionRepository();
@@ -243,16 +394,27 @@ test('production builder performs reproducible fresh builds from a clean reposit
   const expectedCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim();
   expect(releases[0].sourceCommit).toBe(expectedCommit);
   expect(releases[1].sourceCommit).toBe(expectedCommit);
-  for (const file of [releases[0].runtime.file, releases[0].extension.file, releaseFile])
+  const files = [
+    releases[0].runtime.file,
+    releases[0].extension.file,
+    releases[0].extension.crx.file,
+    'update.xml',
+    releaseFile,
+  ];
+  for (const file of files)
     expect(fs.readFileSync(path.join(outDirs[0], file))).toEqual(fs.readFileSync(path.join(outDirs[1], file)));
 });
 
 for (const failureBoundary of [
   'backup:runtime',
   'backup:extension',
+  'backup:crx',
+  'backup:update',
   'backup:manifest',
   'promote:runtime',
   'promote:extension',
+  'promote:crx',
+  'promote:update',
   'promote:manifest',
 ] as const) {
   test(`rolls back the same-version release after ${failureBoundary}`, async () => {
@@ -263,6 +425,8 @@ for (const failureBoundary of [
     const previousFiles = new Map([
       [`fast-browser-mcp-${version}.tar.gz`, Buffer.from('previous runtime')],
       [`fast-browser-extension-${version}.zip`, Buffer.from('previous extension')],
+      [`fast-browser-extension-${version}.crx`, Buffer.from('previous crx')],
+      ['update.xml', Buffer.from('previous update manifest')],
       [`fast-browser-release-${version}.json`, Buffer.from('previous manifest')],
     ]);
     for (const [file, bytes] of previousFiles)
@@ -285,8 +449,9 @@ test('preserves recovery files when release rollback fails', async () => {
   const version = '0.1.0-test.rollback-recovery';
   const runtimeFile = `fast-browser-mcp-${version}.tar.gz`;
   const extensionFile = `fast-browser-extension-${version}.zip`;
+  const crxFile = `fast-browser-extension-${version}.crx`;
   const releaseFile = `fast-browser-release-${version}.json`;
-  for (const file of [runtimeFile, extensionFile, releaseFile])
+  for (const file of [runtimeFile, extensionFile, crxFile, 'update.xml', releaseFile])
     fs.writeFileSync(path.join(outDir, file), `previous ${file}`);
 
   const renameSync: typeof fs.renameSync = (source, destination) => {

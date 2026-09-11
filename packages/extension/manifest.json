@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fast Browser",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Connect your existing Chrome session to Fast Browser for local Claude Code and Codex automation.",
   "permissions": [
     "debugger",
@@ -32,5 +32,5 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAh4N8+Bvs3vWtMNeJsYrbqBmX+z+Vjp2GvvduYnPBqaA96irNcFB4wyxLK0VpTHqNtumAo1nY2CXvYUbNUW/HC+A7NwZKS/dt4PJhd92akNiUVLPFpCMYUENT5xLeVIkcgk0sWhgZkr2Nr79gC11CObcDEMpfPhIO8J92TXzg4zdNFmSjP3rsc5msnv/o+ovDv1tG2utTp0HpfRdbG7kVx+x8yzZ0KjhcJGmBOYvF3NSnGGRADxc2q20qndb0F/5WiOVpPdPo11NLxvaQpmO59HUjyK8tbdKSN44SZfZqHtEyKF5wPF2Paz2FbzWYkNmPL0YllXsbVI4y89lQMrf+QwIDAQAB"
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp+qIRnFkCPWtYEVqsEHRRYn5ptU2rxkMnaq4u0skIdr2uOesgqQRHSvGL68UWw84Mbt/sDZsKeVgbuIjqYSgaXMowC5ak2xEx88jW/DKg+l9cpx6trE8iZ4qdUr7Rn+Hv42soaEDi6YFY5IlW/3PX234ZsL34zSx4RM0NGGNcpPUrHBk76O+TITQG3AaHTVblVswArIQ0y27j3Zk7enmxl7EsOSfq49wx4U9GweNXDfyll8INY7brqcwqLjb402Hw8Hof7DDgf/q+sXNF8jpn2WwMScAxti4oOILNNS5GAeLn4BUCWVTI/MXNL9nwFBNnu49zew7QcQ1ukojLfILEQIDAQAB"
 }

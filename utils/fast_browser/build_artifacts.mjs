@@ -1,12 +1,17 @@
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 
+import { crxIdFromPublicKey, extensionIdFromCrxId, packCrx, publicKeyDer, updateManifest } from './crx.mjs';
+
 const defaultRepositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixedTimestamp = new Date('1980-01-01T00:00:00.000Z');
 const versionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+const defaultReleaseRepository = 'm4ttheweric/playwright';
+const updateManifestFile = 'update.xml';
 const relevantSourcePaths = [
   'LICENSE',
   'NOTICE',
@@ -20,12 +25,18 @@ const relevantSourcePaths = [
 function parseArguments(argv) {
   let productVersion;
   let outDir;
+  let crxKeyPath;
+  let releaseRepository;
   for (let index = 0; index < argv.length; ++index) {
     const argument = argv[index];
     if (argument === '--version')
       productVersion = argv[++index];
     else if (argument === '--out-dir')
       outDir = argv[++index];
+    else if (argument === '--crx-key')
+      crxKeyPath = argv[++index];
+    else if (argument === '--release-repository')
+      releaseRepository = argv[++index];
     else
       throw new Error(`Unknown argument: ${argument}`);
   }
@@ -33,7 +44,23 @@ function parseArguments(argv) {
     throw new Error('Expected --version to be a semver value.');
   if (!outDir)
     throw new Error('Expected --out-dir.');
-  return { productVersion, outDir: path.resolve(outDir) };
+  return { productVersion, outDir: path.resolve(outDir), crxKeyPath, releaseRepository };
+}
+
+// The signing key is never in the tree: it lives outside the repository and is
+// read at pack time only. Losing it means losing the extension id, so the
+// builder refuses to fall back to an unsigned release rather than quietly
+// shipping a set Chrome cannot update.
+export function resolveCrxKeyPath(crxKeyPath) {
+  const resolved = crxKeyPath
+    ?? process.env.FAST_BROWSER_CRX_KEY
+    ?? path.join(os.homedir(), '.fast-browser', 'keys', 'crx-signing.pem');
+  if (!fs.existsSync(resolved)) {
+    throw new Error(
+        `CRX signing key not found at ${resolved}. `
+        + 'Pass --crx-key or set FAST_BROWSER_CRX_KEY.');
+  }
+  return resolved;
 }
 
 function run(command, args, options = {}) {
@@ -194,7 +221,7 @@ export function publishReleaseSet(stagedFiles, outputFiles, dependencies = {}) {
   fs.mkdirSync(backupDir);
   const backups = [];
   const promoted = [];
-  const roles = ['runtime', 'extension', 'manifest'];
+  const roles = ['runtime', 'extension', 'crx', 'update', 'manifest'];
   try {
     for (let index = 0; index < outputFiles.length; ++index) {
       const outputFile = outputFiles[index];
@@ -238,11 +265,31 @@ export function publishReleaseSet(stagedFiles, outputFiles, dependencies = {}) {
   }
 }
 
-export function packagePreparedArtifacts({ productVersion, outDir, repositoryRoot, sourceCommit: commit }, dependencies = {}) {
+export function packagePreparedArtifacts({
+  productVersion,
+  outDir,
+  repositoryRoot,
+  sourceCommit: commit,
+  crxKeyPath,
+  releaseRepository = defaultReleaseRepository,
+}, dependencies = {}) {
   const extensionDir = path.join(repositoryRoot, 'packages', 'extension', 'dist');
   const extensionManifest = JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
   if (typeof extensionManifest.key !== 'string')
     throw new Error('The extension manifest must contain a public key.');
+
+  // The packed CRX takes its id from the signing key while an unpacked load
+  // takes it from the manifest `key`. They are the same extension only while
+  // those two agree, and a mismatch is invisible until Chrome installs the
+  // pair side by side, so it is a build failure here.
+  const crxKey = fs.readFileSync(resolveCrxKeyPath(crxKeyPath), 'utf8');
+  const signingId = extensionIdFromCrxId(crxIdFromPublicKey(publicKeyDer(crxKey)));
+  const manifestId = extensionIdFromManifestKey(extensionManifest.key);
+  if (signingId !== manifestId) {
+    throw new Error(
+        `CRX signing key derives extension id ${signingId}, `
+        + `but packages/extension/manifest.json declares ${manifestId}.`);
+  }
 
   outDir = resolveOutputDirectory(outDir);
   const stagingDir = createArtifactStagingDirectory(outDir);
@@ -263,15 +310,25 @@ export function packagePreparedArtifacts({ productVersion, outDir, repositoryRoo
 
     const runtimeFile = `fast-browser-mcp-${productVersion}.tar.gz`;
     const extensionFile = `fast-browser-extension-${productVersion}.zip`;
+    const crxFile = `fast-browser-extension-${productVersion}.crx`;
     const releaseFile = `fast-browser-release-${productVersion}.json`;
-    const runtimeArchive = path.join(outDir, runtimeFile);
-    const extensionArchive = path.join(outDir, extensionFile);
     const stagedRuntimeArchive = path.join(stagingDir, runtimeFile);
     const stagedExtensionArchive = path.join(stagingDir, extensionFile);
-    const releaseManifest = path.join(outDir, releaseFile);
+    const stagedCrx = path.join(stagingDir, crxFile);
+    const stagedUpdateManifest = path.join(stagingDir, updateManifestFile);
     const stagedReleaseManifest = path.join(stagingDir, releaseFile);
     createRuntimeArchive(runtimeRoot, stagedRuntimeArchive);
     createExtensionArchive(stagedExtensionDir, stagedExtensionArchive);
+    fs.writeFileSync(stagedCrx, packCrx({
+      archive: fs.readFileSync(stagedExtensionArchive),
+      privateKeyPem: crxKey,
+    }));
+    const releaseBase = `https://github.com/${releaseRepository}/releases/download/fast-browser-v${productVersion}`;
+    fs.writeFileSync(stagedUpdateManifest, updateManifest({
+      appId: manifestId,
+      codebase: `${releaseBase}/${crxFile}`,
+      version: extensionManifest.version,
+    }));
     const verifyProvenance = dependencies.verifyProvenance ?? verifyRepositoryProvenance;
     verifyProvenance(repositoryRoot, commit);
 
@@ -288,19 +345,23 @@ export function packagePreparedArtifacts({ productVersion, outDir, repositoryRoo
       extension: {
         file: extensionFile,
         sha256: sha256(stagedExtensionArchive),
-        id: extensionIdFromManifestKey(extensionManifest.key),
+        id: manifestId,
         version: extensionManifest.version,
+        crx: {
+          file: crxFile,
+          sha256: sha256(stagedCrx),
+        },
       },
     };
     fs.writeFileSync(stagedReleaseManifest, `${JSON.stringify(release, null, 2)}\n`);
     publishReleaseSet(
-        [stagedRuntimeArchive, stagedExtensionArchive, stagedReleaseManifest],
-        [runtimeArchive, extensionArchive, releaseManifest],
+        [stagedRuntimeArchive, stagedExtensionArchive, stagedCrx, stagedUpdateManifest, stagedReleaseManifest],
+        [runtimeFile, extensionFile, crxFile, updateManifestFile, releaseFile].map(file => path.join(outDir, file)),
         {
           renameSync: dependencies.renameSync,
           onTransactionBoundary: dependencies.onTransactionBoundary,
         });
-    console.log(`Built ${runtimeFile} and ${extensionFile}`);
+    console.log(`Built ${runtimeFile}, ${extensionFile}, ${crxFile} and ${updateManifestFile}`);
   } catch (error) {
     preserveStaging = error?.recoveryDirectory === stagingDir;
     throw error;
@@ -310,10 +371,20 @@ export function packagePreparedArtifacts({ productVersion, outDir, repositoryRoo
   }
 }
 
-export function buildArtifacts({ productVersion, outDir }) {
+export function buildArtifacts({ productVersion, outDir, crxKeyPath, releaseRepository }) {
   const repositoryRoot = defaultRepositoryRoot;
+  // Resolved before the build so a missing key fails in seconds rather than
+  // after a full playwright-core compile.
+  resolveCrxKeyPath(crxKeyPath);
   const commit = prepareRepositoryForArtifactBuild(repositoryRoot);
-  packagePreparedArtifacts({ productVersion, outDir, repositoryRoot, sourceCommit: commit });
+  packagePreparedArtifacts({
+    productVersion,
+    outDir,
+    repositoryRoot,
+    sourceCommit: commit,
+    crxKeyPath,
+    releaseRepository,
+  });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
