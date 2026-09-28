@@ -27,18 +27,25 @@ export function secretVariants(value: string): string[] {
     encodeURIComponent(value).replace(/%20/g, '+'),
     new URLSearchParams({ v: value }).toString().slice(2),
     JSON.stringify(value).slice(1, -1),
-    htmlEscape(value),
+    // Serializers disagree on which characters they escape: text nodes, legacy
+    // and current attribute values, and either numeric form of the apostrophe.
+    htmlEscape(value, '&<>'),
+    htmlEscape(value, '&"'),
+    htmlEscape(value, '&"<>'),
+    htmlEscape(value, '&"<>\'', '&#39;'),
+    htmlEscape(value, '&"<>\'', '&#x27;'),
   ]);
   variants.delete('');
   // Longest first: a shorter variant can be a substring of a longer one.
   return [...variants].sort((a, b) => b.length - a.length);
 }
 
-function htmlEscape(value: string): string {
-  return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+const HTML_ENTITIES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+
+function htmlEscape(value: string, chars: string, apostrophe = '&#39;'): string {
+  return value.replace(/[&<>"']/g, c => {
+    if (!chars.includes(c))
+      return c;
+    return c === '\'' ? apostrophe : HTML_ENTITIES[c];
+  });
 }

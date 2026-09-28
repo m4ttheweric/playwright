@@ -182,7 +182,7 @@ export class BrowserBackend implements ServerBackend {
       const messages = [String(error), ...context.drainPendingUnhandledRejections().map(formatRejectionReason)];
       traceError = context.redactSecrets(messages.join('\n\n'));
       responseObject = isCdpDisconnect(String(error))
-        ? formatCdpDisconnect(name, urlBefore, context.redactSecrets(String(error)))
+        ? formatCdpDisconnect(name, urlBefore && context.redactSecrets(urlBefore), context.redactSecrets(String(error)))
         : formatError(traceError);
     } finally {
       context.setRunningTool(undefined);

@@ -19,14 +19,19 @@ import path from 'node:path';
 
 import { test, expect } from './fixtures';
 
-const VALUE = 'p@ss w&rd+%<>"x';
+const VALUE = `p@ss w&rd+%<>"x'`;
+const escapeHtml = (value: string, chars: string, apos = '&#39;') => value.replace(/[&<>"']/g, c => chars.includes(c) ? ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': apos })[c]! : c);
 const VARIANTS = [
   VALUE,
   encodeURIComponent(VALUE),
   encodeURIComponent(VALUE).replace(/%20/g, '+'),
   new URLSearchParams({ v: VALUE }).toString().slice(2),
   JSON.stringify(VALUE).slice(1, -1),
-  VALUE.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+  escapeHtml(VALUE, '&<>'),
+  escapeHtml(VALUE, '&"'),
+  escapeHtml(VALUE, '&"<>'),
+  escapeHtml(VALUE, '&<>"\'', '&#39;'),
+  escapeHtml(VALUE, '&<>"\'', '&#x27;'),
 ];
 
 function expectNoVariant(text: string) {
@@ -43,6 +48,13 @@ function readTree(dir: string): string {
   return all;
 }
 
+function listFiles(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? listFiles(full) : [full];
+  });
+}
+
 async function startWithSecret(startClient, outputDir: string, extraArgs: string[] = []) {
   const secretsFile = test.info().outputPath('secrets.env');
   await fs.promises.writeFile(secretsFile, `X-PASSWORD=${VALUE}`);
@@ -50,16 +62,27 @@ async function startWithSecret(startClient, outputDir: string, extraArgs: string
 }
 
 const PAGE = `<!DOCTYPE html>
-  <form method="POST" action="/login">
-    <input id="pw" name="pw" type="text" oninput="
-      console.log('uri:' + encodeURIComponent(this.value));
-      console.log('json:' + JSON.stringify({ v: this.value }));
+  <script>
+    const escapeHtml = (value, chars, apos) => value.replace(/[&<>"']/g, c => chars.includes(c) ? ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": apos })[c] : c);
+    function report(value) {
+      console.log('uri:' + encodeURIComponent(value));
+      console.log('json:' + JSON.stringify({ v: value }));
       const span = document.createElement('span');
-      span.title = this.value;
-      console.log('html:' + span.outerHTML);
-    ">
+      span.title = value;
+      console.log('attr:' + span.outerHTML);
+      const div = document.createElement('div');
+      div.textContent = value;
+      console.log('text:' + div.innerHTML);
+      console.log('legacy:' + escapeHtml(value, '&"'));
+      console.log('full39:' + escapeHtml(value, '&<>"\\'', '&#39;'));
+      console.log('full27:' + escapeHtml(value, '&<>"\\'', '&#x27;'));
+    }
+  </script>
+  <form method="POST" action="/login">
+    <input id="pw" name="pw" type="text" oninput="report(this.value)">
     <button id="go" type="submit">Go</button>
   </form>`;
+const PAGE_GET = PAGE.replace('method="POST"', 'method="GET"');
 
 test('encoded forms of a secret are redacted in console output', async ({ startClient, server }) => {
   const outputDir = test.info().outputPath('output');
@@ -119,4 +142,30 @@ test('a text body saved from a binary-typed response is redacted', async ({ star
   const index = Number(/(\d+)\. \[GET\][^\\]*\/echo/.exec(list)![1]);
   await client.callTool({ name: 'browser_network_request', arguments: { index, part: 'response-body', filename: 'echo.bin' } });
   expectNoVariant(readTree(outputDir));
+});
+
+test('trace records and the session log are redacted on their own', async ({ startClient, server }) => {
+  const outputDir = test.info().outputPath('output');
+  const { client } = await startWithSecret(startClient, outputDir, ['--save-trace', '--save-session']);
+  server.setContent('/', PAGE_GET, 'text/html');
+  server.setContent('/login', 'ok', 'text/plain');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: 'X-PASSWORD' } });
+  await client.callTool({ name: 'browser_click', arguments: { element: 'Go', target: '#go' } });
+  await client.callTool({
+    name: 'browser_run_code_unsafe',
+    arguments: { code: `async page => { await page.title(); } /* ${VALUE} */` },
+  });
+  await client.close();
+
+  const files = listFiles(outputDir);
+  const actions = files.filter(f => path.basename(f) === 'actions.jsonl');
+  const sessions = files.filter(f => path.basename(f) === 'session.md');
+  expect(actions).toHaveLength(1);
+  expect(sessions).toHaveLength(1);
+  for (const file of [...actions, ...sessions]) {
+    const text = fs.readFileSync(file, 'utf8');
+    expectNoVariant(text);
+    expect(text).toContain('<secret>X-PASSWORD</secret>');
+  }
 });
