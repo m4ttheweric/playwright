@@ -39,13 +39,13 @@ const tracingStart = defineTool({
       snapshots: true,
       live: true,
     });
+    context.setTracing(true);
     response.addTextResult(`Trace recording started`);
     response.addFileLink('Action log', `${tracesDir}/${name}.trace`);
     response.addFileLink('Network log', `${tracesDir}/${name}.network`);
     response.addFileLink('Resources', `${tracesDir}/resources`);
     // eslint-disable-next-line no-restricted-syntax
     (browserContext.tracing as any)[traceLegendSymbol] = { tracesDir, name };
-    context.setTracing(true);
   },
 });
 

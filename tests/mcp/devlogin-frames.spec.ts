@@ -68,6 +68,7 @@ for (const [kind, markup] of [
   ['script-less sandboxed', (prefix: string) => `<iframe sandbox src="${prefix}/frame.html"></iframe>`],
   ['srcdoc', () => `<iframe srcdoc="${htmlAttribute(INPUT)}"></iframe>`],
   ['about:blank', () => `<iframe id="f"></iframe><script>document.getElementById('f').contentDocument.body.innerHTML = ${JSON.stringify(INPUT)};</script>`],
+  ['blob:', () => `<iframe id="f"></iframe><script>document.getElementById('f').src = URL.createObjectURL(new Blob([${JSON.stringify(INPUT)}], { type: 'text/html' }));</script>`],
 ] as const) {
   test(`a ${kind} frame is refused as opaque before any request`, async ({ startClient, server }) => {
     const origin = new URL(server.PREFIX).origin;
@@ -173,7 +174,7 @@ test('a fill during a browser_start_video recording is refused as recording', as
   server.setContent('/', INPUT, 'text/html');
   await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
   const started = await client.callTool({ name: 'browser_start_video', arguments: {} });
-  test.skip(!!started.isError, 'browser_start_video is not exposed with these capabilities');
+  expect(started.isError).toBeFalsy();
   expect(await client.callTool({
     name: 'browser_type',
     arguments: { element: 'pw', target: '#pw', text: PASSWORD },
@@ -191,7 +192,7 @@ test('a fill during a browser_start_tracing trace is refused as recording', asyn
   server.setContent('/', INPUT, 'text/html');
   await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
   const started = await client.callTool({ name: 'browser_start_tracing', arguments: {} });
-  test.skip(!!started.isError, 'browser_start_tracing is not exposed with these capabilities');
+  expect(started.isError).toBeFalsy();
   expect(await client.callTool({
     name: 'browser_type',
     arguments: { element: 'pw', target: '#pw', text: PASSWORD },
