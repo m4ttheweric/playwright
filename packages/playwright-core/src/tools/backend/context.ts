@@ -335,7 +335,7 @@ export class Context {
   }
 
   isRecording(): boolean {
-    return !!this.config.saveVideo || !!this._video || this._tracing || this._tabs.some(tab => !!tab.page.video()) || isRecordingHar(this._rawBrowserContext);
+    return !!this.config.saveVideo || !!this._video || this._tracing || this._tabs.some(tab => !!tab.page.video()) || isTracingOrRecordingHar(this._rawBrowserContext);
   }
 
   private async _startPageVideo(page: playwrightTypes.Page) {
@@ -609,13 +609,13 @@ export class Context {
 
 type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
 
-// Covers a HAR from the context options or startHar. Unknown state counts as recording.
-function isRecordingHar(browserContext: playwrightTypes.BrowserContext): boolean {
-  // eslint-disable-next-line no-restricted-syntax -- HAR state is only kept on the client object's private fields.
+// Covers a HAR from the context options or startHar, and tracing started by page code. Unknown state counts as recording.
+function isTracingOrRecordingHar(browserContext: playwrightTypes.BrowserContext): boolean {
+  // eslint-disable-next-line no-restricted-syntax -- HAR and tracing state are only kept on the client object's private fields.
   const tracing = browserContext.tracing as any;
-  if (!(tracing?._harRecorders instanceof Map))
+  if (typeof tracing?._isTracing !== 'boolean' || !(tracing._harRecorders instanceof Map))
     return true;
-  return tracing._harRecorders.size > 0;
+  return tracing._isTracing || tracing._harRecorders.size > 0;
 }
 
 // A blocked page (an open dialog) never answers the probe; an unanswered probe counts as connected so the lock fails closed.

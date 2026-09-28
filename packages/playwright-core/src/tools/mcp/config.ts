@@ -203,6 +203,7 @@ export async function resolveCLIConfigForCLI(daemonProfilesDir: string, sessionN
   const browser = await validateBrowserConfig(result.browser);
 
   validateOutputDir(result.outputDir);
+  validateSecrets(result.secrets);
 
   if (!result.extension && !browser.isolated && !browser.userDataDir && !browser.remoteEndpoint && !browser.cdpEndpoint) {
     // No custom value provided, use the daemon data dir.

@@ -176,16 +176,22 @@ export class BrowserBackend implements ServerBackend {
     const cwd = rawArguments._meta?.cwd;
     const raw = !!rawArguments._meta?.raw;
     const context = this._context!;
+    const response = new Response(context, name, parsedArguments, { relativeTo: cwd, raw, json });
     // Counted before the lock check so a fill that starts during the check still waits for this call to finish.
+    // Nothing between here and the try below may throw, or the count never drains.
     const readback = isReadbackCall(name, parsedArguments);
     if (readback) {
       context.beginReadbackCall();
-      if (await context.isReadbackLocked()) {
-        context.endReadbackCall();
-        return formatError(`${name} is unavailable until the page leaves the saved login it was just filled with.`);
+      let locked = true;
+      try {
+        locked = await context.isReadbackLocked();
+      } finally {
+        if (locked)
+          context.endReadbackCall();
       }
+      if (locked)
+        return formatError(`${name} is unavailable until the page leaves the saved login it was just filled with.`);
     }
-    const response = new Response(context, name, parsedArguments, { relativeTo: cwd, raw, json });
     context.setRunningTool(name);
     // Must run before tool.handle(): establishes this dispatch's epoch so any
     // action it starts (and any still-running background action from a prior,

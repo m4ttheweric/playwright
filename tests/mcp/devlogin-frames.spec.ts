@@ -231,6 +231,25 @@ test('a fill with recordHar in the config context options is refused as recordin
   expect(await typedLines(client)).toEqual([]);
 });
 
+test('a fill during a trace started from browser_run_code_unsafe is refused as recording', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({ devLogins: { logins: login(origin) } });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  const started = await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async page => { await page.context().tracing.start({ snapshots: true }); }` } });
+  expect(started.isError).toBeFalsy();
+  expect(await client.callTool({
+    name: 'browser_type',
+    arguments: { element: 'pw', target: '#pw', text: PASSWORD },
+  })).toHaveResponse({ isError: true, error: expect.stringContaining('refused: recording') });
+  expect(devLoginRequests()).toEqual([]);
+  expect(await typedLines(client)).toEqual([]);
+  const stopped = await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async page => { await page.context().tracing.stop(); }` } });
+  expect(stopped.isError).toBeFalsy();
+  expect((await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } })).isError).toBeFalsy();
+  expect(await typedLines(client)).toEqual([`typed:<secret>${PASSWORD}</secret>`]);
+});
+
 test('a fill during a browser_start_video recording is refused as recording', async ({ startClient, server }) => {
   const origin = new URL(server.PREFIX).origin;
   const { client } = await startClient({
