@@ -184,6 +184,7 @@ export class Context {
   // reusing the mechanism keeps the drain in takeActionTelemetry() uniform.
   private _scriptTelemetry: TraceRecord['script'] | undefined;
   private _filledSecrets = new Map<string, string>();
+  private _readbackLock: { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle } | undefined;
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -203,6 +204,7 @@ export class Context {
   }
 
   async dispose() {
+    this.unlockReadback();
     process.off('unhandledRejection', this._onUnhandledRejection);
     await disposeAll(this._disposables);
     for (const tab of this._tabs)
@@ -525,6 +527,28 @@ export class Context {
   rememberFilledSecret(name: string, value: string) {
     if (value)
       this._filledSecrets.set(name, value);
+  }
+
+  lockReadback(frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle) {
+    this.unlockReadback();
+    this._readbackLock = { frame, handle };
+  }
+
+  unlockReadback() {
+    const lock = this._readbackLock;
+    this._readbackLock = undefined;
+    lock?.handle.dispose().catch(() => {});
+  }
+
+  // A same-document navigation keeps the filled element alive, so only a detached frame or element lifts the lock.
+  async isReadbackLocked(): Promise<boolean> {
+    const lock = this._readbackLock;
+    if (!lock)
+      return false;
+    const alive = !lock.frame.isDetached() && await lock.handle.evaluate(el => el.isConnected).catch(() => false);
+    if (!alive)
+      this.unlockReadback();
+    return alive;
   }
 
   redactSecrets(text: string): string {

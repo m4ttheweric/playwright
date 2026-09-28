@@ -29,6 +29,16 @@ import type { ClientInfo, ServerBackend } from '../utils/mcp/server';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+const READBACK_TOOLS = new Set([
+  'browser_evaluate',
+  'browser_run_code_unsafe',
+  'browser_network_request',
+  'browser_network_requests',
+  'browser_take_screenshot',
+  'browser_start_tracing',
+  'browser_start_video',
+]);
+
 // A lost CDP connection is a different failure class from a tool call that
 // simply did not work: a reconnected or replaced browser has no page state
 // left, so an agent that retries the call that failed would run it against a
@@ -152,6 +162,8 @@ export class BrowserBackend implements ServerBackend {
     const cwd = rawArguments._meta?.cwd;
     const raw = !!rawArguments._meta?.raw;
     const context = this._context!;
+    if (READBACK_TOOLS.has(name) && await context.isReadbackLocked())
+      return formatError(`${name} is unavailable until the page leaves the saved login it was just filled with.`);
     const response = new Response(context, name, parsedArguments, { relativeTo: cwd, raw, json });
     context.setRunningTool(name);
     // Must run before tool.handle(): establishes this dispatch's epoch so any

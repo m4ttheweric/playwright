@@ -23,8 +23,9 @@ import type { Tab } from './tab';
 
 export async function fillDevLogin(tab: Tab, locator: playwright.Locator, name: string): Promise<void> {
   const handle = await locator.elementHandle(tab.actionTimeoutOptions);
+  let frame: playwright.Frame;
   try {
-    await fillHandle(tab, handle, name);
+    frame = await fillHandle(tab, handle, name);
   } catch (error) {
     await handle.dispose().catch(() => {});
     if (error instanceof DevLoginRefusedError) {
@@ -33,10 +34,10 @@ export async function fillDevLogin(tab: Tab, locator: playwright.Locator, name: 
     }
     throw error;
   }
-  await handle.dispose().catch(() => {});
+  tab.context.lockReadback(frame, handle);
 }
 
-async function fillHandle(tab: Tab, handle: playwright.ElementHandle<SVGElement | HTMLElement>, name: string) {
+async function fillHandle(tab: Tab, handle: playwright.ElementHandle<SVGElement | HTMLElement>, name: string): Promise<playwright.Frame> {
   if (tab.context.isRecording())
     throw new DevLoginRefusedError(name, 'recording');
   const channel = secretsChannel(tab.context.config.secretsChannelFd);
@@ -58,4 +59,5 @@ async function fillHandle(tab: Tab, handle: playwright.ElementHandle<SVGElement 
   await handle.fill(reply.value, tab.actionTimeoutOptions);
   // eslint-disable-next-line no-restricted-properties
   process.stderr.write(`filled saved login for ${frameOrigin}\n`);
+  return frame!;
 }
