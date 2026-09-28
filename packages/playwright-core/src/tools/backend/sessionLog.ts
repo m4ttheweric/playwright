@@ -44,7 +44,7 @@ export class SessionLog {
     return new SessionLog(sessionFolder, cwd);
   }
 
-  logResponse(toolName: string, toolArgs: Record<string, any>, responseObject: any) {
+  logResponse(toolName: string, toolArgs: Record<string, any>, responseObject: any, redact: (text: string) => string) {
     const parsed = { ...parseResponse(responseObject, this._cwd), text: undefined };
     const lines: string[] = [''];
     lines.push(
@@ -62,6 +62,7 @@ export class SessionLog {
     }
 
     lines.push('');
-    this._sessionFileQueue = this._sessionFileQueue.then(() => fs.promises.appendFile(this._file, lines.join('\n'))).catch(e => debug('pw:tools:error')(e));
+    const text = redact(lines.join('\n'));
+    this._sessionFileQueue = this._sessionFileQueue.then(() => fs.promises.appendFile(this._file, text)).catch(e => debug('pw:tools:error')(e));
   }
 }

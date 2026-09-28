@@ -116,10 +116,15 @@ export class Response {
   }
 
   private async _writeFile(resolvedFile: ResolvedFile, data: Buffer | string | null) {
-    if (typeof data === 'string')
+    if (typeof data === 'string') {
       await fs.promises.writeFile(resolvedFile.fileName, this._context.redactSecrets(data), 'utf-8');
-    else if (data)
-      await fs.promises.writeFile(resolvedFile.fileName, data);
+    } else if (data) {
+      const asText = data.toString('utf8');
+      if (Buffer.from(asText, 'utf8').equals(data))
+        await fs.promises.writeFile(resolvedFile.fileName, this._context.redactSecrets(asText), 'utf-8');
+      else
+        await fs.promises.writeFile(resolvedFile.fileName, data);
+    }
     this._writtenFiles.add(path.resolve(resolvedFile.fileName));
   }
 

@@ -25,6 +25,7 @@ import { eventsHelper } from '@utils/eventsHelper';
 import { isPathInside, isSystemDirectory, isWritable } from '@utils/fileUtils';
 import { playwright } from '../../inprocess';
 
+import { secretVariants } from './devlogin';
 import { Tab } from './tab';
 
 import type * as playwrightTypes from '../../..';
@@ -179,6 +180,7 @@ export class Context {
   // cannot race a later call the way a modal-interrupted action can, but
   // reusing the mechanism keeps the drain in takeActionTelemetry() uniform.
   private _scriptTelemetry: TraceRecord['script'] | undefined;
+  private _filledSecrets = new Map<string, string>();
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -509,11 +511,21 @@ export class Context {
     };
   }
 
+  rememberFilledSecret(name: string, value: string) {
+    if (value)
+      this._filledSecrets.set(name, value);
+  }
+
   redactSecrets(text: string): string {
-    for (const [secretName, secretValue] of Object.entries(this.config.secrets ?? {})) {
+    const entries: [string, string][] = [
+      ...Object.entries(this.config.secrets ?? {}),
+      ...this._filledSecrets.entries(),
+    ];
+    for (const [secretName, secretValue] of entries) {
       if (!secretValue)
         continue;
-      text = text.replaceAll(secretValue, `<secret>${secretName}</secret>`);
+      for (const variant of secretVariants(secretValue))
+        text = text.replaceAll(variant, `<secret>${secretName}</secret>`);
     }
     return text;
   }

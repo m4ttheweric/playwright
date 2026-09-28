@@ -177,12 +177,12 @@ export class BrowserBackend implements ServerBackend {
       for (const reason of context.drainPendingUnhandledRejections())
         response.addError(formatRejectionReason(reason));
       responseObject = await response.serialize();
-      this._sessionLog?.logResponse(name, parsedArguments, responseObject);
+      this._sessionLog?.logResponse(name, parsedArguments, responseObject, text => context.redactSecrets(text));
     } catch (error: any) {
       const messages = [String(error), ...context.drainPendingUnhandledRejections().map(formatRejectionReason)];
-      traceError = messages.join('\n\n');
+      traceError = context.redactSecrets(messages.join('\n\n'));
       responseObject = isCdpDisconnect(String(error))
-        ? formatCdpDisconnect(name, urlBefore, String(error))
+        ? formatCdpDisconnect(name, urlBefore, context.redactSecrets(String(error)))
         : formatError(traceError);
     } finally {
       context.setRunningTool(undefined);
@@ -207,7 +207,7 @@ export class BrowserBackend implements ServerBackend {
           code: response.code(),
           script: telemetry.script,
           error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
-        });
+        }, text => context.redactSecrets(text));
       } catch (e) {
         debug('pw:tools:error')(e);
       }
