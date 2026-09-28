@@ -118,6 +118,56 @@ test('the lock works when attached over --cdp-endpoint', async ({ startClient, s
   expect(await typedLines(client)).toEqual([`typed:<secret>${PASSWORD}</secret>`]);
 });
 
+test('a cross-origin iframe that keeps grabbing focus receives nothing from repeated fills', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({ devLogins: { logins: login(origin) } });
+  server.setContent('/frame.html', `<input id="grab" oninput="console.log('typed:' + this.value)">
+    <script>
+      const input = document.getElementById('grab');
+      setInterval(() => input.focus(), 0);
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { input.focus(); channel.port2.postMessage(0); };
+      channel.port2.postMessage(0);
+    </script>`, 'text/html');
+  server.setContent('/', `<input id="pw" type="password" oninput="console.log('length:' + this.value.length)">
+    <iframe src="${server.CROSS_PROCESS_PREFIX}/frame.html"></iframe>`, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  await client.callTool({ name: 'browser_wait_for', arguments: { time: 0.3 } });
+  for (let i = 0; i < 5; i++) {
+    const response = await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } });
+    expect(response.isError).toBeFalsy();
+  }
+  const messages = JSON.stringify((await client.callTool({ name: 'browser_console_messages' })).content);
+  expect(await typedLines(client)).toEqual([]);
+  expect(messages.match(/length:\d+/g)).toEqual(Array(5).fill(`length:${VALUE.length}`));
+});
+
+test('a controlled input tracking its value through the property setter sees the fill', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({ devLogins: { logins: login(origin) } });
+  server.setContent('/', `<input id="pw" type="password">
+    <script>
+      const input = document.getElementById('pw');
+      const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      let tracked = input.value;
+      Object.defineProperty(input, 'value', {
+        get() { return native.get.call(this); },
+        set(v) { tracked = String(v); native.set.call(this, v); },
+      });
+      input.addEventListener('input', () => {
+        if (input.value !== tracked) {
+          tracked = input.value;
+          console.log('changed:' + input.value.length);
+        }
+      });
+    </script>`, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  const response = await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } });
+  expect(response.isError).toBeFalsy();
+  const messages = JSON.stringify((await client.callTool({ name: 'browser_console_messages' })).content);
+  expect(messages.match(/changed:\d+/g)).toEqual([`changed:${VALUE.length}`]);
+});
+
 test('an approved fill that fails inside the page reports no form of the value', async ({ startClient, server }) => {
   const origin = new URL(server.PREFIX).origin;
   const { client } = await startClient({

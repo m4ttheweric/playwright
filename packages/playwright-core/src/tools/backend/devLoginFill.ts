@@ -22,6 +22,8 @@ import type * as playwright from '../../..';
 import type { Tab } from './tab';
 
 const READBACK_DRAIN_TIMEOUT_MS = 10_000;
+const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
+const RETRY_WAITS_MS = [0, 20, 100, 100, 500];
 
 export async function fillDevLogin(tab: Tab, locator: playwright.Locator, name: string): Promise<void> {
   tab.context.beginDevLoginFill();
@@ -48,7 +50,7 @@ async function fillLocator(tab: Tab, locator: playwright.Locator, name: string) 
   tab.context.rememberFilledSecret(name, approved.value);
   // The lock owns the handle from here: a fill that throws may still have left the value in the input.
   tab.context.lockReadback(approved.frame, handle);
-  await handle.fill(approved.value, tab.actionTimeoutOptions);
+  await setValue(handle, approved.value, tab.actionTimeoutOptions.timeout ?? DEFAULT_ACTION_TIMEOUT_MS);
   // eslint-disable-next-line no-restricted-properties
   process.stderr.write(`filled saved login for ${approved.frameOrigin}\n`);
 }
@@ -77,4 +79,69 @@ async function requestValue(tab: Tab, handle: playwright.ElementHandle<SVGElemen
   if (reply.origin !== frameOrigin || (reply.kind === 'password' && elementKind !== 'password'))
     throw new DevLoginRefusedError(name, 'mismatch');
   return { frame, frameOrigin, value: reply.value };
+}
+
+// Keyboard input lands in whichever frame holds focus, and a hostile frame can take focus between
+// the focus call and the keystrokes, so the value is set on the element itself in the isolated world.
+async function setValue(handle: playwright.ElementHandle, value: string, timeout: number) {
+  // eslint-disable-next-line no-restricted-syntax -- the isolated world is only reachable on the in-process server objects.
+  const serverHandle = (handle as any)._connection?.toImpl?.(handle);
+  if (typeof serverHandle?.evaluateInUtility !== 'function')
+    throw new Error('The saved login cannot be filled: the element is not reachable.');
+  const deadline = timeout ? Date.now() + timeout : Infinity;
+  for (let retry = 0; ; retry++) {
+    const result = await raceDeadline<SetValueResult>(serverHandle.evaluateInUtility(setValueInPage, value), deadline, timeout);
+    if (result === 'done')
+      return;
+    if (result === 'error:notconnected')
+      throw new Error('Element is not attached to the DOM');
+    const wait = RETRY_WAITS_MS[Math.min(retry, RETRY_WAITS_MS.length - 1)];
+    if (Date.now() + wait >= deadline)
+      throw new Error(`Timeout ${timeout}ms exceeded: element is not ${result.missingState}`);
+    await new Promise(f => setTimeout(f, wait));
+  }
+}
+
+async function raceDeadline<T>(promise: Promise<T>, deadline: number, timeout: number): Promise<T> {
+  if (deadline === Infinity)
+    return await promise;
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => timer = setTimeout(() => reject(new Error(`Timeout ${timeout}ms exceeded.`)), Math.max(0, deadline - Date.now())));
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type SetValueResult = 'done' | 'error:notconnected' | { missingState: string };
+
+// Serialized into the utility world: it may reference nothing outside its own body.
+async function setValueInPage([injected, node, value]: [any, Node, string]): Promise<SetValueResult> {
+  const missing = await injected.checkElementStates(node, ['visible', 'enabled', 'editable']);
+  if (missing)
+    return missing;
+  const element = injected.retarget(node, 'follow-label') as Element | null;
+  if (!element)
+    return 'error:notconnected';
+  let prototype: HTMLInputElement | HTMLTextAreaElement;
+  if (element.nodeName.toLowerCase() === 'input') {
+    const type = (element as HTMLInputElement).type.toLowerCase();
+    if (!['', 'email', 'number', 'password', 'search', 'tel', 'text', 'url'].includes(type))
+      throw injected.createStacklessError(`Input of type "${type}" cannot be filled`);
+    if (type === 'number') {
+      value = value.trim();
+      if (isNaN(Number(value)))
+        throw injected.createStacklessError('Cannot type text into input[type=number]');
+    }
+    prototype = HTMLInputElement.prototype;
+  } else if (element.nodeName.toLowerCase() === 'textarea') {
+    prototype = HTMLTextAreaElement.prototype;
+  } else {
+    throw injected.createStacklessError('Element is not an <input> or <textarea> element');
+  }
+  Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value);
+  element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+  element.dispatchEvent(new Event('change', { bubbles: true }));
+  return 'done';
 }
