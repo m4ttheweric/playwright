@@ -101,3 +101,38 @@ test('recordings can start again after the filled frame navigates', async ({ sta
     expect(response.isError, call.name).toBeFalsy();
   }
 });
+
+test('readback stays refused while any filled element remains', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const email = 'devlogin:login.example.com:email';
+  const { client } = await startClient({
+    devLogins: { logins: [
+      { name: email, origin, kind: 'email', value: 'user@login.example.com' },
+      { name: PASSWORD, origin, kind: 'password', value: 'Sup3r secret&+' },
+    ] },
+  });
+  server.setContent('/', `<input id="em" type="email"><input id="pw" type="password">
+    <button id="rmpw" onclick="document.getElementById('pw').remove()">rmpw</button>
+    <button id="rmem" onclick="document.getElementById('em').remove()">rmem</button>`, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  const filled = await client.callTool({
+    name: 'browser_fill_form',
+    arguments: { fields: [
+      { name: 'Email', type: 'textbox', target: '#em', value: email },
+      { name: 'Password', type: 'textbox', target: '#pw', value: PASSWORD },
+    ] },
+  });
+  expect(filled.isError).toBeFalsy();
+  await client.callTool({ name: 'browser_click', arguments: { element: 'rmpw', target: '#rmpw' } });
+  expect(await client.callTool(READBACK[0])).toHaveResponse({ isError: true, error: expect.stringContaining('unavailable until the page leaves') });
+  await client.callTool({ name: 'browser_click', arguments: { element: 'rmem', target: '#rmem' } });
+  expect((await client.callTool({ name: 'browser_evaluate', arguments: { function: '() => 1' } })).isError).toBeFalsy();
+});
+
+test('an open dialog keeps readback refused without hanging', async ({ startClient, server }) => {
+  const client = await filledClient(startClient, server, '<input id="pw" type="password"><button id="a" onclick="alert(\'hi\')">a</button>');
+  await client.callTool({ name: 'browser_click', arguments: { element: 'a', target: '#a' } });
+  const started = Date.now();
+  expect(await client.callTool(READBACK[0])).toHaveResponse({ isError: true, error: expect.stringContaining('unavailable until the page leaves') });
+  expect(Date.now() - started).toBeLessThan(5000);
+});

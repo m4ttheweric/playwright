@@ -184,7 +184,7 @@ export class Context {
   // reusing the mechanism keeps the drain in takeActionTelemetry() uniform.
   private _scriptTelemetry: TraceRecord['script'] | undefined;
   private _filledSecrets = new Map<string, string>();
-  private _readbackLock: { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle } | undefined;
+  private _readbackLocks: ReadbackLock[] = [];
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -530,25 +530,25 @@ export class Context {
   }
 
   lockReadback(frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle) {
-    this.unlockReadback();
-    this._readbackLock = { frame, handle };
+    this._readbackLocks.push({ frame, handle });
   }
 
   unlockReadback() {
-    const lock = this._readbackLock;
-    this._readbackLock = undefined;
-    lock?.handle.dispose().catch(() => {});
+    const locks = this._readbackLocks;
+    this._readbackLocks = [];
+    for (const lock of locks)
+      lock.handle.dispose().catch(() => {});
   }
 
-  // A same-document navigation keeps the filled element alive, so only a detached frame or element lifts the lock.
+  // A same-document navigation keeps the filled element alive, so only a detached frame or element lifts a lock.
   async isReadbackLocked(): Promise<boolean> {
-    const lock = this._readbackLock;
-    if (!lock)
-      return false;
-    const alive = !lock.frame.isDetached() && await lock.handle.evaluate(el => el.isConnected).catch(() => false);
-    if (!alive)
-      this.unlockReadback();
-    return alive;
+    const locks = this._readbackLocks;
+    const alive = await Promise.all(locks.map(lock => !lock.frame.isDetached() && isStillConnected(lock.handle)));
+    const dead = locks.filter((_, i) => !alive[i]);
+    this._readbackLocks = this._readbackLocks.filter(lock => !dead.includes(lock));
+    for (const lock of dead)
+      lock.handle.dispose().catch(() => {});
+    return this._readbackLocks.length > 0;
   }
 
   redactSecrets(text: string): string {
@@ -563,6 +563,19 @@ export class Context {
         text = text.replaceAll(variant, `<secret>${secretName}</secret>`);
     }
     return text;
+  }
+}
+
+type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
+
+// A blocked page (an open dialog) never answers the probe; an unanswered probe counts as connected so the lock fails closed.
+async function isStillConnected(handle: playwrightTypes.ElementHandle): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>(resolve => timer = setTimeout(() => resolve(true), 1000));
+  try {
+    return await Promise.race([handle.evaluate(el => el.isConnected).catch(() => false), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
