@@ -117,6 +117,22 @@ test('a success reply for another origin is refused as mismatch', async ({ start
   expect(await typedLines(client)).toEqual([]);
 });
 
+for (const value of [42, '']) {
+  test(`a success reply whose value is ${JSON.stringify(value)} is refused as unavailable`, async ({ startClient, server }) => {
+    test.skip(test.info().project.name !== 'chrome', 'CDP frame tree');
+    const origin = new URL(server.PREFIX).origin;
+    const { client } = await startClient({ devLogins: { logins: logins(origin), replyOverride: { value } } });
+    server.setContent('/', PAGE, 'text/html');
+    await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+    expect(await client.callTool({
+      name: 'browser_type',
+      arguments: { element: 'Password', target: '#pw', text: PASSWORD },
+    })).toHaveResponse({ isError: true, error: expect.stringContaining('refused: unavailable') });
+    expect(await typedLines(client)).toEqual([]);
+    expect((await client.callTool({ name: 'browser_snapshot', arguments: {} })).isError).toBeFalsy();
+  });
+}
+
 test('a password reply for a text element is refused as mismatch', async ({ startClient, server }) => {
   test.skip(test.info().project.name !== 'chrome', 'CDP frame tree');
   const origin = new URL(server.PREFIX).origin;

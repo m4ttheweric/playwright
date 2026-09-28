@@ -76,6 +76,8 @@ async function requestValue(tab: Tab, handle: playwright.ElementHandle<SVGElemen
     throw new DevLoginRefusedError(name, reply);
   if ('refused' in reply)
     throw new DevLoginRefusedError(name, reply.refused, reply.until);
+  if (typeof reply.value !== 'string' || !reply.value)
+    throw new DevLoginRefusedError(name, 'unavailable');
   if (reply.origin !== frameOrigin || (reply.kind === 'password' && elementKind !== 'password'))
     throw new DevLoginRefusedError(name, 'mismatch');
   return { frame, frameOrigin, value: reply.value };

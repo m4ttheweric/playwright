@@ -215,6 +215,22 @@ test('a fill with recordVideo in the config context options is refused as record
   expect(await typedLines(client)).toEqual([]);
 });
 
+test('a fill with recordHar in the config context options is refused as recording', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    config: { browser: { contextOptions: { recordHar: { path: test.info().outputPath('network.har') } } } },
+    devLogins: { logins: login(origin) },
+  });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect(await client.callTool({
+    name: 'browser_type',
+    arguments: { element: 'pw', target: '#pw', text: PASSWORD },
+  })).toHaveResponse({ isError: true, error: expect.stringContaining('refused: recording') });
+  expect(devLoginRequests()).toEqual([]);
+  expect(await typedLines(client)).toEqual([]);
+});
+
 test('a fill during a browser_start_video recording is refused as recording', async ({ startClient, server }) => {
   const origin = new URL(server.PREFIX).origin;
   const { client } = await startClient({
