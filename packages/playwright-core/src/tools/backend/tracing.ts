@@ -45,6 +45,7 @@ const tracingStart = defineTool({
     response.addFileLink('Resources', `${tracesDir}/resources`);
     // eslint-disable-next-line no-restricted-syntax
     (browserContext.tracing as any)[traceLegendSymbol] = { tracesDir, name };
+    context.setTracing(true);
   },
 });
 
@@ -68,6 +69,7 @@ const tracingStop = defineTool({
     await browserContext.tracing.stop();
     // eslint-disable-next-line no-restricted-syntax
     delete (browserContext.tracing as any)[traceLegendSymbol];
+    context.setTracing(false);
 
     response.addTextResult(`Trace recording stopped.`);
     response.addFileLink('Trace', `${traceLegend.tracesDir}/${traceLegend.name}.trace`);

@@ -50,6 +50,7 @@ export type ContextConfig = {
   outputMaxSize?: number;
   saveSession?: boolean;
   saveTrace?: boolean;
+  saveVideo?: { width: number, height: number };
   // Not CLI-settable: threaded in by the caller that constructs BrowserBackend
   // (mcp/program.ts and friends) from data those callers already have --
   // mcp/program.ts's `serverVersion` and mcp/protocol.ts's `VERSION` -- and
@@ -160,6 +161,7 @@ export class Context {
     fileNames: string[];
     fileName: string;
   } | undefined;
+  private _tracing = false;
   private _disposables: Disposable[] = [];
 
   private _runningToolName: string | undefined;
@@ -321,6 +323,14 @@ export class Context {
       await page.screencast.stop();
     this._video = undefined;
     return [...video.fileNames];
+  }
+
+  setTracing(tracing: boolean) {
+    this._tracing = tracing;
+  }
+
+  isRecording(): boolean {
+    return !!this.config.saveVideo || !!this._video || this._tracing || this._tabs.some(tab => !!tab.page.video());
   }
 
   private async _startPageVideo(page: playwrightTypes.Page) {

@@ -83,3 +83,16 @@ test('bare-name secrets keep working', async ({ startClient, server }) => {
   await client.callTool({ name: 'browser_type', arguments: { element: 'Password', target: '#pw', text: 'X-PASSWORD' } });
   expect(await typedLines(client)).toEqual(['typed:<secret>X-PASSWORD</secret>']);
 });
+
+test('a browser without a CDP frame tree refuses instead of filling', async ({ startClient, server }) => {
+  test.skip(test.info().project.name === 'chrome' || test.info().project.name === 'msedge' || test.info().project.name === 'chromium', 'covered by the Chromium tests');
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({ devLogins: { logins: [{ name: NAME, origin, kind: 'password', value: 'x' }] } });
+  server.setContent('/', PAGE, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect(await client.callTool({
+    name: 'browser_type',
+    arguments: { element: 'Password', target: '#pw', text: NAME },
+  })).toHaveResponse({ isError: true, error: expect.stringContaining('refused: opaque-origin') });
+  expect(await typedLines(client)).toEqual([]);
+});

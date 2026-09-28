@@ -29,10 +29,12 @@ import type { Protocol } from './protocol';
 export class CRExecutionContext implements js.ExecutionContextDelegate {
   _client: CRSession;
   _contextId: number;
+  readonly origin: string;
 
   constructor(client: CRSession, contextPayload: Protocol.Runtime.ExecutionContextDescription) {
     this._client = client;
     this._contextId = contextPayload.id;
+    this.origin = contextPayload.origin;
   }
 
   async rawEvaluateJSON(expression: string): Promise<any> {

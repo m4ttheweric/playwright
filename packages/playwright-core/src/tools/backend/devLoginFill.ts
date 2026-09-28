@@ -37,6 +37,8 @@ export async function fillDevLogin(tab: Tab, locator: playwright.Locator, name: 
 }
 
 async function fillHandle(tab: Tab, handle: playwright.ElementHandle<SVGElement | HTMLElement>, name: string) {
+  if (tab.context.isRecording())
+    throw new DevLoginRefusedError(name, 'recording');
   const channel = secretsChannel(tab.context.config.secretsChannelFd);
   if (!channel)
     throw new DevLoginRefusedError(name, 'no-channel');
