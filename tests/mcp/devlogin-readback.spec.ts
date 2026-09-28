@@ -31,6 +31,10 @@ const RECORDING = [
   { name: 'browser_start_tracing', arguments: {} },
   { name: 'browser_start_video', arguments: {} },
 ];
+const RENDERING = [
+  { name: 'browser_pdf_save', arguments: {} },
+  { name: 'browser_annotate', arguments: {} },
+];
 
 test.beforeEach(() => {
   test.skip(test.info().project.name !== 'chrome', 'CDP frame tree');
@@ -50,7 +54,7 @@ async function filledClient(startClient: StartClient, server: TestServer, page: 
 }
 
 function recordingArgs() {
-  return ['--caps=devtools', `--output-dir=${test.info().outputPath('output')}`];
+  return ['--caps=devtools,pdf', `--output-dir=${test.info().outputPath('output')}`];
 }
 
 test('readback tools are refused while the filled value is on the page', async ({ startClient, server }) => {
@@ -83,9 +87,9 @@ test('a same-document navigation keeps the lock', async ({ startClient, server }
   expect(await client.callTool(READBACK[0])).toHaveResponse({ isError: true, error: expect.stringContaining('unavailable until the page leaves') });
 });
 
-test('recordings cannot start while the filled value is on the page', async ({ startClient, server }) => {
+test('recordings and page renders cannot start while the filled value is on the page', async ({ startClient, server }) => {
   const client = await filledClient(startClient, server, '<input id="pw" type="password">', recordingArgs());
-  for (const call of RECORDING) {
+  for (const call of [...RECORDING, ...RENDERING]) {
     expect(await client.callTool(call), call.name).toHaveResponse({
       isError: true,
       error: expect.stringContaining('unavailable until the page leaves the saved login'),
@@ -135,4 +139,71 @@ test('an open dialog keeps readback refused without hanging', async ({ startClie
   const started = Date.now();
   expect(await client.callTool(READBACK[0])).toHaveResponse({ isError: true, error: expect.stringContaining('unavailable until the page leaves') });
   expect(Date.now() - started).toBeLessThan(5000);
+});
+
+test('a javascript: navigation is refused while the filled value is on the page', async ({ startClient, server }) => {
+  const client = await filledClient(startClient, server, '<title>orig</title><input id="pw" type="password">');
+  for (const url of [`javascript:document.title=btoa(document.getElementById('pw').value)`, ` JaVa\tScRiPt:document.title=btoa(document.getElementById('pw').value)`]) {
+    expect(await client.callTool({ name: 'browser_navigate', arguments: { url } }), url).toHaveResponse({
+      isError: true,
+      error: expect.stringContaining('unavailable until the page leaves the saved login'),
+    });
+  }
+  const tabs = JSON.stringify((await client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })).content);
+  expect(tabs).toContain('[orig]');
+  expect(tabs).not.toContain(Buffer.from('Sup3r secret&+').toString('base64'));
+});
+
+test('a readback call already running when a fill starts finishes before the value is requested', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const value = 'Sup3r secret&+';
+  const { client } = await startClient({ devLogins: { logins: [{ name: PASSWORD, origin, kind: 'password', value }] } });
+  server.setContent('/', '<input id="pw" type="password">', 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  const script = client.callTool({
+    name: 'browser_run_code_unsafe',
+    arguments: { code: `async page => { await page.waitForTimeout(1500); return await page.evaluate(() => { const v = document.getElementById('pw').value; return [v.split('').join('|'), btoa(v)]; }); }` },
+  });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const typed = client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } });
+  const output = JSON.stringify((await script).content);
+  expect((await typed).isError).toBeFalsy();
+  for (const form of [value, value.split('').join('|'), Buffer.from(value).toString('base64')])
+    expect(output).not.toContain(form);
+});
+
+test('readback is refused while a fill is waiting for its value', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    devLogins: { logins: [{ name: PASSWORD, origin, kind: 'password', value: 'Sup3r secret&+' }], delayMs: 1_500 },
+  });
+  server.setContent('/', '<input id="pw" type="password">', 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  const typed = client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } });
+  await new Promise(resolve => setTimeout(resolve, 500));
+  expect(await client.callTool(READBACK[0])).toHaveResponse({ isError: true, error: expect.stringContaining('unavailable until the page leaves') });
+  expect((await typed).isError).toBeFalsy();
+});
+
+test('a fill that fails after the value arrives keeps readback refused', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    args: ['--timeout-action=1000'],
+    devLogins: { logins: [{ name: PASSWORD, origin, kind: 'password', value: 'Sup3r secret&+' }] },
+  });
+  server.setContent('/', '<input id="pw" type="password" disabled>', 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect((await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } })).isError).toBe(true);
+  expect(await client.callTool(READBACK[0])).toHaveResponse({ isError: true, error: expect.stringContaining('unavailable until the page leaves') });
+});
+
+test('a refused fill leaves readback open', async ({ startClient, server }) => {
+  const { client } = await startClient({ devLogins: { logins: [], refusal: 'unknown' } });
+  server.setContent('/', '<input id="pw" type="password">', 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect(await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } })).toHaveResponse({
+    isError: true,
+    error: expect.stringContaining('refused: unknown'),
+  });
+  expect((await client.callTool({ name: 'browser_evaluate', arguments: { function: '() => 1' } })).isError).toBeFalsy();
 });

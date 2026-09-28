@@ -21,11 +21,22 @@ import { secretsChannel } from './secretsChannel';
 import type * as playwright from '../../..';
 import type { Tab } from './tab';
 
+const READBACK_DRAIN_TIMEOUT_MS = 10_000;
+
 export async function fillDevLogin(tab: Tab, locator: playwright.Locator, name: string): Promise<void> {
-  const handle = await locator.elementHandle(tab.actionTimeoutOptions);
-  let frame: playwright.Frame;
+  tab.context.beginDevLoginFill();
   try {
-    frame = await fillHandle(tab, handle, name);
+    await fillLocator(tab, locator, name);
+  } finally {
+    tab.context.endDevLoginFill();
+  }
+}
+
+async function fillLocator(tab: Tab, locator: playwright.Locator, name: string) {
+  const handle = await locator.elementHandle(tab.actionTimeoutOptions);
+  let approved: { frame: playwright.Frame, frameOrigin: string, value: string };
+  try {
+    approved = await requestValue(tab, handle, name);
   } catch (error) {
     await handle.dispose().catch(() => {});
     if (error instanceof DevLoginRefusedError) {
@@ -34,10 +45,15 @@ export async function fillDevLogin(tab: Tab, locator: playwright.Locator, name: 
     }
     throw error;
   }
-  tab.context.lockReadback(frame, handle);
+  tab.context.rememberFilledSecret(name, approved.value);
+  // The lock owns the handle from here: a fill that throws may still have left the value in the input.
+  tab.context.lockReadback(approved.frame, handle);
+  await handle.fill(approved.value, tab.actionTimeoutOptions);
+  // eslint-disable-next-line no-restricted-properties
+  process.stderr.write(`filled saved login for ${approved.frameOrigin}\n`);
 }
 
-async function fillHandle(tab: Tab, handle: playwright.ElementHandle<SVGElement | HTMLElement>, name: string): Promise<playwright.Frame> {
+async function requestValue(tab: Tab, handle: playwright.ElementHandle<SVGElement | HTMLElement>, name: string) {
   if (tab.context.isRecording())
     throw new DevLoginRefusedError(name, 'recording');
   const channel = secretsChannel(tab.context.config.secretsChannelFd);
@@ -45,9 +61,14 @@ async function fillHandle(tab: Tab, handle: playwright.ElementHandle<SVGElement 
     throw new DevLoginRefusedError(name, 'no-channel');
   const frame = await handle.ownerFrame();
   const frameOrigin = frame ? await frameSecurityOrigin(frame) : undefined;
-  if (!frameOrigin)
+  if (!frame || !frameOrigin)
     throw new DevLoginRefusedError(name, 'opaque-origin');
   const elementKind = await handle.evaluate(el => el.localName === 'input' && (el as HTMLInputElement).type === 'password') ? 'password' : 'text';
+  if (!await tab.context.waitForReadbackCallsToDrain(READBACK_DRAIN_TIMEOUT_MS))
+    throw new DevLoginRefusedError(name, 'timeout');
+  // A recording tool that was still running during the first check may have started one.
+  if (tab.context.isRecording())
+    throw new DevLoginRefusedError(name, 'recording');
   const reply = await channel.request(name, frameOrigin, elementKind);
   if (reply === 'timeout' || reply === 'no-channel')
     throw new DevLoginRefusedError(name, reply);
@@ -55,9 +76,5 @@ async function fillHandle(tab: Tab, handle: playwright.ElementHandle<SVGElement 
     throw new DevLoginRefusedError(name, reply.refused, reply.until);
   if (reply.origin !== frameOrigin || (reply.kind === 'password' && elementKind !== 'password'))
     throw new DevLoginRefusedError(name, 'mismatch');
-  tab.context.rememberFilledSecret(name, reply.value);
-  await handle.fill(reply.value, tab.actionTimeoutOptions);
-  // eslint-disable-next-line no-restricted-properties
-  process.stderr.write(`filled saved login for ${frameOrigin}\n`);
-  return frame!;
+  return { frame, frameOrigin, value: reply.value };
 }

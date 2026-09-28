@@ -37,7 +37,21 @@ const READBACK_TOOLS = new Set([
   'browser_take_screenshot',
   'browser_start_tracing',
   'browser_start_video',
+  'browser_pdf_save',
+  'browser_annotate',
 ]);
+
+function isReadbackCall(name: string, args: Record<string, unknown>): boolean {
+  if (READBACK_TOOLS.has(name))
+    return true;
+  if (name !== 'browser_navigate' || typeof args.url !== 'string')
+    return false;
+  try {
+    return new URL(args.url).protocol === 'javascript:';
+  } catch {
+    return false;
+  }
+}
 
 // A lost CDP connection is a different failure class from a tool call that
 // simply did not work: a reconnected or replaced browser has no page state
@@ -162,8 +176,15 @@ export class BrowserBackend implements ServerBackend {
     const cwd = rawArguments._meta?.cwd;
     const raw = !!rawArguments._meta?.raw;
     const context = this._context!;
-    if (READBACK_TOOLS.has(name) && await context.isReadbackLocked())
-      return formatError(`${name} is unavailable until the page leaves the saved login it was just filled with.`);
+    // Counted before the lock check so a fill that starts during the check still waits for this call to finish.
+    const readback = isReadbackCall(name, parsedArguments);
+    if (readback) {
+      context.beginReadbackCall();
+      if (await context.isReadbackLocked()) {
+        context.endReadbackCall();
+        return formatError(`${name} is unavailable until the page leaves the saved login it was just filled with.`);
+      }
+    }
     const response = new Response(context, name, parsedArguments, { relativeTo: cwd, raw, json });
     context.setRunningTool(name);
     // Must run before tool.handle(): establishes this dispatch's epoch so any
@@ -197,6 +218,8 @@ export class BrowserBackend implements ServerBackend {
         ? formatCdpDisconnect(name, urlBefore && context.redactSecrets(urlBefore), context.redactSecrets(String(error)))
         : formatError(traceError);
     } finally {
+      if (readback)
+        context.endReadbackCall();
       context.setRunningTool(undefined);
       // Tracing is a local side effect, not part of the tool-result contract: a
       // write failure (ENOSPC, EACCES, output dir removed mid-session, ...) must

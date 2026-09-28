@@ -185,6 +185,9 @@ export class Context {
   private _scriptTelemetry: TraceRecord['script'] | undefined;
   private _filledSecrets = new Map<string, string>();
   private _readbackLocks: ReadbackLock[] = [];
+  private _devLoginFillsInFlight = 0;
+  private _readbackCallsInFlight = 0;
+  private _readbackDrainWaiters: (() => void)[] = [];
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -540,8 +543,44 @@ export class Context {
       lock.handle.dispose().catch(() => {});
   }
 
+  beginDevLoginFill() {
+    this._devLoginFillsInFlight++;
+  }
+
+  endDevLoginFill() {
+    this._devLoginFillsInFlight--;
+  }
+
+  beginReadbackCall() {
+    this._readbackCallsInFlight++;
+  }
+
+  endReadbackCall() {
+    if (--this._readbackCallsInFlight)
+      return;
+    const waiters = this._readbackDrainWaiters;
+    this._readbackDrainWaiters = [];
+    for (const waiter of waiters)
+      waiter();
+  }
+
+  async waitForReadbackCallsToDrain(timeoutMs: number): Promise<boolean> {
+    if (!this._readbackCallsInFlight)
+      return true;
+    let timer: NodeJS.Timeout | undefined;
+    const drained = new Promise<boolean>(resolve => this._readbackDrainWaiters.push(() => resolve(true)));
+    const timeout = new Promise<boolean>(resolve => timer = setTimeout(() => resolve(false), timeoutMs));
+    try {
+      return await Promise.race([drained, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // A same-document navigation keeps the filled element alive, so only a detached frame or element lifts a lock.
   async isReadbackLocked(): Promise<boolean> {
+    if (this._devLoginFillsInFlight)
+      return true;
     const locks = this._readbackLocks;
     const alive = await Promise.all(locks.map(lock => !lock.frame.isDetached() && isStillConnected(lock.handle)));
     const dead = locks.filter((_, i) => !alive[i]);
