@@ -17,6 +17,7 @@
 import * as z from 'zod';
 import { defineTabTool } from './tool';
 import { elementSchema } from './snapshot';
+import { isDevLoginName, DevLoginRefusedError } from './devlogin';
 
 const press = defineTabTool({
   capability: 'core-input',
@@ -62,6 +63,8 @@ const pressSequentially = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
+    if (isDevLoginName(params.text))
+      throw new DevLoginRefusedError(params.text, 'slow-typing');
     response.addCode(`// Press ${params.text}`);
     response.addCode(`await page.keyboard.type('${params.text}');`);
     // The text itself stays out of the acknowledgement: it may be a secret,
@@ -95,6 +98,8 @@ const type = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
+    if (isDevLoginName(params.text))
+      throw new DevLoginRefusedError(params.text, params.slowly ? 'slow-typing' : 'no-channel');
     const { locator, resolved } = await tab.targetLocator(params, { trace: true });
     const secret = tab.context.lookupSecret(params.text);
     // Names the field, never the value, which may be a secret.

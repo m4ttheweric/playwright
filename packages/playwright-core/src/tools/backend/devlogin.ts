@@ -49,3 +49,20 @@ function htmlEscape(value: string, chars: string, apostrophe = '&#39;'): string 
     return c === '\'' ? apostrophe : HTML_ENTITIES[c];
   });
 }
+
+export type DevLoginLocalRefusal = 'opaque-origin' | 'slow-typing' | 'timeout' | 'no-channel' | 'recording';
+export type DevLoginRemoteRefusal = 'unknown' | 'mismatch' | 'limited' | 'unavailable';
+
+export class DevLoginRefusedError extends Error {
+  readonly secretName: string;
+  readonly reason: DevLoginLocalRefusal | DevLoginRemoteRefusal;
+  readonly until: number | undefined;
+
+  constructor(secretName: string, reason: DevLoginLocalRefusal | DevLoginRemoteRefusal, until?: number) {
+    const lifts = until ? ` until ${new Date(until).toISOString()}` : '';
+    super(`Saved login ${secretName} refused: ${reason}${lifts}. Nothing was typed.`);
+    this.secretName = secretName;
+    this.reason = reason;
+    this.until = until;
+  }
+}

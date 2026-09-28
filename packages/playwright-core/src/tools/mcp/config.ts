@@ -22,6 +22,7 @@ import dotenv from 'dotenv';
 import { isSystemDirectory } from '@utils/fileUtils';
 import { playwright } from '../../inprocess';
 import { configFromIniFile } from './configIni';
+import { DEVLOGIN_PREFIX } from '../backend/devlogin';
 
 import type * as playwrightTypes from '../../..';
 import type { Config, ToolCapability } from './config.d';
@@ -136,6 +137,7 @@ export async function resolveCLIConfigForMCP(cliOptions: CLIOptions, env?: NodeJ
     browser.launchOptions.headless = os.platform() === 'linux' && !process.env.DISPLAY;
 
   validateOutputDir(result.outputDir);
+  validateSecrets(result.secrets);
 
   return { ...result, browser, configFile };
 }
@@ -145,6 +147,13 @@ function validateOutputDir(outputDir: string | undefined) {
     return;
   if (isSystemDirectory(outputDir))
     throw new Error(`--output-dir cannot point to a system directory: ${path.resolve(outputDir)}.`);
+}
+
+function validateSecrets(secrets: Record<string, string> | undefined) {
+  for (const name of Object.keys(secrets ?? {})) {
+    if (name.startsWith(DEVLOGIN_PREFIX))
+      throw new Error(`secrets must not define "${name}": names starting with "${DEVLOGIN_PREFIX}" are reserved for saved logins.`);
+  }
 }
 
 export async function resolveCLIConfigForCLI(daemonProfilesDir: string, sessionName: string, options: any, env?: NodeJS.ProcessEnv): Promise<FullConfig> {
