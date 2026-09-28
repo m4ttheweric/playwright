@@ -59,6 +59,7 @@ export type ContextConfig = {
   productVersion?: string;
   protocolVersion?: number;
   secrets?: Record<string, string>;
+  secretsChannelFd?: number;
   snapshot?: {
     mode?: 'full' | 'none' | 'interactive';
   };

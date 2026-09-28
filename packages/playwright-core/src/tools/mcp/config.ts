@@ -72,6 +72,7 @@ export type CLIOptions = {
   saveTrace?: boolean;
   saveVideo?: ViewportSize;
   secrets?: Record<string, string>;
+  secretsChannelFd?: number;
   sharedBrowserContext?: boolean;
   snapshotMode?: 'full' | 'none' | 'interactive';
   storageState?: string;
@@ -386,6 +387,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
     saveTrace: cliOptions.saveTrace,
     saveVideo: cliOptions.saveVideo,
     secrets: cliOptions.secrets,
+    secretsChannelFd: cliOptions.secretsChannelFd,
     sharedBrowserContext: cliOptions.sharedBrowserContext,
     snapshot: cliOptions.snapshotMode ? { mode: cliOptions.snapshotMode } : undefined,
     outputDir: cliOptions.outputDir,

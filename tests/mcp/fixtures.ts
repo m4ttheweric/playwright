@@ -51,6 +51,15 @@ type CDPServer = {
   start: () => Promise<BrowserContext>;
 };
 
+export type DevLoginFixture = {
+  logins: { name: string, origin: string, kind: 'email' | 'password', value: string }[],
+  refusal?: 'unknown' | 'mismatch' | 'limited' | 'unavailable',
+  until?: number,
+  delayMs?: number,
+  staleFirst?: boolean,
+  closeChannel?: boolean,
+};
+
 export type StartClient = (options?: {
   clientName?: string,
   args?: string[],
@@ -61,6 +70,7 @@ export type StartClient = (options?: {
   rootsResponseDelay?: number,
   env?: NodeJS.ProcessEnv,
   noTimeoutForTest?: boolean,
+  devLogins?: DevLoginFixture,
 }) => Promise<{ client: Client, stderr: () => string }>;
 
 
@@ -141,7 +151,14 @@ export const test = serverTest.extend<TestFixtures & TestOptions, WorkerFixtures
         PW_TMPDIR_FOR_TEST: testInfo.outputPath('tmp'),
         ...options?.env
       });
-      const { transport, stderr } = await createTransport(mcpServerType, { args, env, cwd: options?.cwd || test.info().outputPath() });
+      let host: string | undefined;
+      if (options?.devLogins) {
+        const fixtureFile = testInfo.outputPath('devlogin-fixture.json');
+        await fs.promises.writeFile(fixtureFile, JSON.stringify({ ...options.devLogins, requestLog: testInfo.outputPath('devlogin-requests.jsonl') }));
+        env.DEVLOGIN_FIXTURE = fixtureFile;
+        host = path.join(__dirname, 'devlogin-channel-host.mjs');
+      }
+      const { transport, stderr } = await createTransport(mcpServerType, { args, env, cwd: options?.cwd || test.info().outputPath(), host });
       let stderrBuffer = '';
       stderr?.on('data', data => {
         if (process.env.PWDEBUGIMPL)
@@ -217,14 +234,14 @@ export const test = serverTest.extend<TestFixtures & TestOptions, WorkerFixtures
   mcpServerType: ['mcp', { option: true }],
 });
 
-async function createTransport(mcpServerType: TestOptions['mcpServerType'], options: { args: string[], env: NodeJS.ProcessEnv, cwd: string }): Promise<{
+async function createTransport(mcpServerType: TestOptions['mcpServerType'], options: { args: string[], env: NodeJS.ProcessEnv, cwd: string, host?: string }): Promise<{
   transport: Transport,
   stderr: Stream | null,
 }> {
   const profilesDir = test.info().outputPath('ms-playwright');
   const transport = new StdioClientTransport({
     command: 'node',
-    args: [...(mcpServerType === 'test-mcp' ? testMcpServerPath : mcpServerPath), ...options.args],
+    args: [...(options.host ? [options.host] : []), ...(mcpServerType === 'test-mcp' ? testMcpServerPath : mcpServerPath), ...options.args],
     cwd: options.cwd,
     stderr: 'pipe',
     env: {
@@ -238,6 +255,13 @@ async function createTransport(mcpServerType: TestOptions['mcpServerType'], opti
     transport,
     stderr: transport.stderr!,
   };
+}
+
+export function devLoginRequests(): { id: string, name: string, frameOrigin: string, elementKind: string }[] {
+  const file = test.info().outputPath('devlogin-requests.jsonl');
+  if (!fs.existsSync(file))
+    return [];
+  return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
 type Response = Awaited<ReturnType<Client['callTool']>>;
