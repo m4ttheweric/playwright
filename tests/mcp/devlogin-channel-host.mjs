@@ -39,9 +39,15 @@ channel.on('data', chunk => {
   }
 });
 
+const served = new Map();
+
 function answer(request) {
   fs.appendFileSync(fixture.requestLog, JSON.stringify(request) + '\n');
-  const login = fixture.logins.find(l => l.name === request.name);
+  // Entries sharing a name answer in turn, as a login updated between two fills would.
+  const entries = fixture.logins.filter(l => l.name === request.name);
+  const turn = served.get(request.name) ?? 0;
+  served.set(request.name, turn + 1);
+  const login = entries[turn % entries.length];
   let reply;
   if (!login)
     reply = { id: request.id, name: request.name, refused: fixture.refusal ?? 'unknown', until: fixture.until };

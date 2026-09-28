@@ -21,18 +21,19 @@ import { test, expect } from './fixtures';
 
 const VALUE = `p@ss w&rd+%<>"x'`;
 const escapeHtml = (value: string, chars: string, apos = '&#39;') => value.replace(/[&<>"']/g, c => chars.includes(c) ? ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': apos })[c]! : c);
-const VARIANTS = [
-  VALUE,
-  encodeURIComponent(VALUE),
-  encodeURIComponent(VALUE).replace(/%20/g, '+'),
-  new URLSearchParams({ v: VALUE }).toString().slice(2),
-  JSON.stringify(VALUE).slice(1, -1),
-  escapeHtml(VALUE, '&<>'),
-  escapeHtml(VALUE, '&"'),
-  escapeHtml(VALUE, '&"<>'),
-  escapeHtml(VALUE, '&<>"\'', '&#39;'),
-  escapeHtml(VALUE, '&<>"\'', '&#x27;'),
+const variantsOf = (value: string) => [
+  value,
+  encodeURIComponent(value),
+  encodeURIComponent(value).replace(/%20/g, '+'),
+  new URLSearchParams({ v: value }).toString().slice(2),
+  JSON.stringify(value).slice(1, -1),
+  escapeHtml(value, '&<>'),
+  escapeHtml(value, '&"'),
+  escapeHtml(value, '&"<>'),
+  escapeHtml(value, '&<>"\'', '&#39;'),
+  escapeHtml(value, '&<>"\'', '&#x27;'),
 ];
+const VARIANTS = variantsOf(VALUE);
 
 function expectNoVariant(text: string) {
   for (const variant of VARIANTS)
@@ -167,5 +168,34 @@ test('trace records and the session log are redacted on their own', async ({ sta
     const text = fs.readFileSync(file, 'utf8');
     expectNoVariant(text);
     expect(text).toContain('<secret>X-PASSWORD</secret>');
+  }
+});
+
+test('every value filled under one saved-login name stays redacted, with no fragment left', async ({ startClient, server }) => {
+  test.skip(test.info().project.name !== 'chrome', 'CDP frame tree');
+  const name = 'devlogin:login.example.com:password';
+  const first = 'Sup3r secret&+';
+  const second = first + 'Z9';
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    devLogins: { logins: [first, second].map(value => ({ name, origin, kind: 'password' as const, value })) },
+  });
+  const form = `<form method="POST" action="/login"><input id="pw" name="pw" type="password"><button type="submit">Go</button></form>`;
+  server.setContent('/', form, 'text/html');
+  server.setContent('/login', form, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  for (let i = 0; i < 2; i++) {
+    const typed = await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: name, submit: true } });
+    expect(typed.isError).toBeFalsy();
+  }
+  const list = JSON.stringify((await client.callTool({ name: 'browser_network_requests', arguments: { static: true } })).content);
+  const indexes = [...list.matchAll(/(\d+)\. \[POST\][^\\]*\/login/g)].map(match => Number(match[1]));
+  expect(indexes).toHaveLength(2);
+  for (const index of indexes) {
+    const text = JSON.stringify((await client.callTool({ name: 'browser_network_request', arguments: { index, part: 'request-body' } })).content);
+    for (const variant of [...variantsOf(first), ...variantsOf(second)])
+      expect(text).not.toContain(variant);
+    expect(text).toContain(`<secret>${name}</secret>`);
+    expect(text).not.toContain('Z9');
   }
 });

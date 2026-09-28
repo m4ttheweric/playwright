@@ -183,7 +183,7 @@ export class Context {
   // cannot race a later call the way a modal-interrupted action can, but
   // reusing the mechanism keeps the drain in takeActionTelemetry() uniform.
   private _scriptTelemetry: TraceRecord['script'] | undefined;
-  private _filledSecrets = new Map<string, string>();
+  private _filledSecrets: [string, string][] = [];
   private _readbackLocks: ReadbackLock[] = [];
   private _devLoginFillsInFlight = 0;
   private _readbackCallsInFlight = 0;
@@ -527,9 +527,10 @@ export class Context {
     };
   }
 
+  // A value stays redacted for the runtime's life: an earlier value filled under the same name may still sit in network history.
   rememberFilledSecret(name: string, value: string) {
-    if (value)
-      this._filledSecrets.set(name, value);
+    if (value && !this._filledSecrets.some(([n, v]) => n === name && v === value))
+      this._filledSecrets.push([name, value]);
   }
 
   lockReadback(frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle) {
@@ -593,14 +594,15 @@ export class Context {
   redactSecrets(text: string): string {
     const entries: [string, string][] = [
       ...Object.entries(this.config.secrets ?? {}),
-      ...this._filledSecrets.entries(),
+      ...this._filledSecrets,
     ];
-    for (const [secretName, secretValue] of entries) {
-      if (!secretValue)
-        continue;
-      for (const variant of secretVariants(secretValue))
-        text = text.replaceAll(variant, `<secret>${secretName}</secret>`);
-    }
+    const replacements = entries
+        .filter(([, secretValue]) => secretValue)
+        .flatMap(([secretName, secretValue]) => secretVariants(secretValue).map(variant => [secretName, variant] as const));
+    // Longest first across every secret: a shorter secret inside a longer one must not leave a fragment of the longer one behind.
+    replacements.sort((a, b) => b[1].length - a[1].length);
+    for (const [secretName, variant] of replacements)
+      text = text.replaceAll(variant, `<secret>${secretName}</secret>`);
     return text;
   }
 }

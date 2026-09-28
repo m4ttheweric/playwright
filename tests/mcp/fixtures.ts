@@ -58,7 +58,7 @@ export type DevLoginFixture = {
   delayMs?: number,
   staleFirst?: boolean,
   closeChannel?: boolean,
-  replyOverride?: { origin?: string, kind?: 'email' | 'password' },
+  replyOverride?: { origin?: string, kind?: 'email' | 'password', value?: unknown },
 };
 
 export type StartClient = (options?: {
