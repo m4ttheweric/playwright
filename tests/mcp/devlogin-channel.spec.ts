@@ -23,6 +23,9 @@ const PAGE = `<!DOCTYPE html>
   <input id="email" type="text" oninput="console.log('typed:' + this.value)">
   <input id="pw" type="password" oninput="console.log('typed:' + this.value)">`;
 
+const LENGTH_PAGE = `<!DOCTYPE html>
+  <input id="pw" type="password" oninput="console.log('typed:' + this.value); console.log('length:' + this.value.length)">`;
+
 async function typedLines(client) {
   const response = await client.callTool({ name: 'browser_console_messages' });
   return JSON.stringify(response.content).match(/typed:(?:(?! @ )[^"\\])*/g) ?? [];
@@ -90,12 +93,41 @@ test('a reply with a stale id is dropped, not used', async ({ startClient, serve
   test.skip(test.info().project.name !== 'chrome', 'CDP frame tree');
   const origin = new URL(server.PREFIX).origin;
   const { client } = await startClient({ devLogins: { logins: logins(origin), staleFirst: true } });
-  server.setContent('/', PAGE, 'text/html');
+  server.setContent('/', LENGTH_PAGE, 'text/html');
   await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
   await client.callTool({ name: 'browser_type', arguments: { element: 'Password', target: '#pw', text: PASSWORD } });
   const lines = await typedLines(client);
   expect(lines).toEqual([`typed:<secret>${PASSWORD}</secret>`]);
   expect(JSON.stringify(lines)).not.toContain('WRONG-VALUE');
+  // Both values redact to the same placeholder; the filled length tells them apart.
+  const response = await client.callTool({ name: 'browser_console_messages' });
+  expect(JSON.stringify(response.content).match(/length:\d+/g)).toEqual([`length:${'Sup3r secret&+'.length}`]);
+});
+
+test('a success reply for another origin is refused as mismatch', async ({ startClient, server }) => {
+  test.skip(test.info().project.name !== 'chrome', 'CDP frame tree');
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({ devLogins: { logins: logins(origin), replyOverride: { origin: 'https://login.example.com' } } });
+  server.setContent('/', PAGE, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect(await client.callTool({
+    name: 'browser_type',
+    arguments: { element: 'Password', target: '#pw', text: PASSWORD },
+  })).toHaveResponse({ isError: true, error: expect.stringContaining('refused: mismatch') });
+  expect(await typedLines(client)).toEqual([]);
+});
+
+test('a password reply for a text element is refused as mismatch', async ({ startClient, server }) => {
+  test.skip(test.info().project.name !== 'chrome', 'CDP frame tree');
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({ devLogins: { logins: logins(origin), replyOverride: { kind: 'password' } } });
+  server.setContent('/', PAGE, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect(await client.callTool({
+    name: 'browser_type',
+    arguments: { element: 'Email', target: '#email', text: EMAIL },
+  })).toHaveResponse({ isError: true, error: expect.stringContaining('refused: mismatch') });
+  expect(await typedLines(client)).toEqual([]);
 });
 
 test('no reply within 10 s refuses as timeout', async ({ startClient, server }) => {

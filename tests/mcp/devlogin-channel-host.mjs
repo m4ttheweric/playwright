@@ -48,7 +48,7 @@ function answer(request) {
   else if (login.origin !== request.frameOrigin || (login.kind === 'password' && request.elementKind !== 'password'))
     reply = { id: request.id, name: request.name, refused: 'mismatch' };
   else
-    reply = { id: request.id, name: request.name, origin: login.origin, kind: login.kind, value: login.value };
+    reply = { id: request.id, name: request.name, origin: login.origin, kind: login.kind, value: login.value, ...fixture.replyOverride };
   setTimeout(() => {
     if (fixture.staleFirst)
       channel.write(JSON.stringify({ ...reply, id: `stale-${request.id}`, value: 'WRONG-VALUE' }) + '\n');
