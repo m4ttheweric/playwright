@@ -25,6 +25,7 @@ import { eventsHelper } from '@utils/eventsHelper';
 import { isPathInside, isSystemDirectory, isWritable } from '@utils/fileUtils';
 import { playwright } from '../../inprocess';
 
+import { secretVariants } from './devlogin';
 import { Tab } from './tab';
 
 import type * as playwrightTypes from '../../..';
@@ -49,6 +50,7 @@ export type ContextConfig = {
   outputMaxSize?: number;
   saveSession?: boolean;
   saveTrace?: boolean;
+  saveVideo?: { width: number, height: number };
   // Not CLI-settable: threaded in by the caller that constructs BrowserBackend
   // (mcp/program.ts and friends) from data those callers already have --
   // mcp/program.ts's `serverVersion` and mcp/protocol.ts's `VERSION` -- and
@@ -58,6 +60,7 @@ export type ContextConfig = {
   productVersion?: string;
   protocolVersion?: number;
   secrets?: Record<string, string>;
+  secretsChannelFd?: number;
   snapshot?: {
     mode?: 'full' | 'none' | 'interactive';
   };
@@ -158,6 +161,7 @@ export class Context {
     fileNames: string[];
     fileName: string;
   } | undefined;
+  private _tracing = false;
   private _disposables: Disposable[] = [];
 
   private _runningToolName: string | undefined;
@@ -179,6 +183,11 @@ export class Context {
   // cannot race a later call the way a modal-interrupted action can, but
   // reusing the mechanism keeps the drain in takeActionTelemetry() uniform.
   private _scriptTelemetry: TraceRecord['script'] | undefined;
+  private _filledSecrets: [string, string][] = [];
+  private _readbackLocks: ReadbackLock[] = [];
+  private _devLoginFillsInFlight = 0;
+  private _readbackCallsInFlight = 0;
+  private _readbackDrainWaiters: (() => void)[] = [];
   private _pendingUnhandledRejections: unknown[] = [];
   private _unhandledRejectionListeners = new Set<(reason: unknown) => void>();
   private _onUnhandledRejection = (reason: unknown) => {
@@ -198,6 +207,7 @@ export class Context {
   }
 
   async dispose() {
+    this.unlockReadback();
     process.off('unhandledRejection', this._onUnhandledRejection);
     await disposeAll(this._disposables);
     for (const tab of this._tabs)
@@ -318,6 +328,14 @@ export class Context {
       await page.screencast.stop();
     this._video = undefined;
     return [...video.fileNames];
+  }
+
+  setTracing(tracing: boolean) {
+    this._tracing = tracing;
+  }
+
+  isRecording(): boolean {
+    return !!this.config.saveVideo || !!this._video || this._tracing || this._tabs.some(tab => !!tab.page.video()) || isTracingOrRecordingHar(this._rawBrowserContext);
   }
 
   private async _startPageVideo(page: playwrightTypes.Page) {
@@ -509,13 +527,105 @@ export class Context {
     };
   }
 
-  redactSecrets(text: string): string {
-    for (const [secretName, secretValue] of Object.entries(this.config.secrets ?? {})) {
-      if (!secretValue)
-        continue;
-      text = text.replaceAll(secretValue, `<secret>${secretName}</secret>`);
+  // A value stays redacted for the runtime's life: an earlier value filled under the same name may still sit in network history.
+  rememberFilledSecret(name: string, value: string) {
+    if (value && !this._filledSecrets.some(([n, v]) => n === name && v === value))
+      this._filledSecrets.push([name, value]);
+  }
+
+  lockReadback(frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle) {
+    this._readbackLocks.push({ frame, handle });
+  }
+
+  unlockReadback() {
+    const locks = this._readbackLocks;
+    this._readbackLocks = [];
+    for (const lock of locks)
+      lock.handle.dispose().catch(() => {});
+  }
+
+  beginDevLoginFill() {
+    this._devLoginFillsInFlight++;
+  }
+
+  endDevLoginFill() {
+    this._devLoginFillsInFlight--;
+  }
+
+  beginReadbackCall() {
+    this._readbackCallsInFlight++;
+  }
+
+  endReadbackCall() {
+    if (--this._readbackCallsInFlight)
+      return;
+    const waiters = this._readbackDrainWaiters;
+    this._readbackDrainWaiters = [];
+    for (const waiter of waiters)
+      waiter();
+  }
+
+  async waitForReadbackCallsToDrain(timeoutMs: number): Promise<boolean> {
+    if (!this._readbackCallsInFlight)
+      return true;
+    let timer: NodeJS.Timeout | undefined;
+    const drained = new Promise<boolean>(resolve => this._readbackDrainWaiters.push(() => resolve(true)));
+    const timeout = new Promise<boolean>(resolve => timer = setTimeout(() => resolve(false), timeoutMs));
+    try {
+      return await Promise.race([drained, timeout]);
+    } finally {
+      clearTimeout(timer);
     }
+  }
+
+  // A same-document navigation keeps the filled element alive, so only a detached frame or element lifts a lock.
+  async isReadbackLocked(): Promise<boolean> {
+    if (this._devLoginFillsInFlight)
+      return true;
+    const locks = this._readbackLocks;
+    const alive = await Promise.all(locks.map(lock => !lock.frame.isDetached() && isStillConnected(lock.handle)));
+    const dead = locks.filter((_, i) => !alive[i]);
+    this._readbackLocks = this._readbackLocks.filter(lock => !dead.includes(lock));
+    for (const lock of dead)
+      lock.handle.dispose().catch(() => {});
+    return this._readbackLocks.length > 0;
+  }
+
+  redactSecrets(text: string): string {
+    const entries: [string, string][] = [
+      ...Object.entries(this.config.secrets ?? {}),
+      ...this._filledSecrets,
+    ];
+    const replacements = entries
+        .filter(([, secretValue]) => secretValue)
+        .flatMap(([secretName, secretValue]) => secretVariants(secretValue).map(variant => [secretName, variant] as const));
+    // Longest first across every secret: a shorter secret inside a longer one must not leave a fragment of the longer one behind.
+    replacements.sort((a, b) => b[1].length - a[1].length);
+    for (const [secretName, variant] of replacements)
+      text = text.replaceAll(variant, `<secret>${secretName}</secret>`);
     return text;
+  }
+}
+
+type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
+
+// Covers a HAR from the context options or startHar, and tracing started by page code. Unknown state counts as recording.
+function isTracingOrRecordingHar(browserContext: playwrightTypes.BrowserContext): boolean {
+  // eslint-disable-next-line no-restricted-syntax -- HAR and tracing state are only kept on the client object's private fields.
+  const tracing = browserContext.tracing as any;
+  if (typeof tracing?._isTracing !== 'boolean' || !(tracing._harRecorders instanceof Map))
+    return true;
+  return tracing._isTracing || tracing._harRecorders.size > 0;
+}
+
+// A blocked page (an open dialog) never answers the probe; an unanswered probe counts as connected so the lock fails closed.
+async function isStillConnected(handle: playwrightTypes.ElementHandle): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>(resolve => timer = setTimeout(() => resolve(true), 1000));
+  try {
+    return await Promise.race([handle.evaluate(el => el.isConnected).catch(() => false), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

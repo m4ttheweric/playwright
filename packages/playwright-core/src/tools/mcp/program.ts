@@ -70,6 +70,7 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
       .option('--save-trace', 'Record every tool call to a local JSONL trace')
       .option('--save-video <size>', 'record a video of each page into the "videos" subdirectory of the output directory, specify size as "800x600". Applies to browsers this server launches and to tabs attached through the extension relay or an isolated cdp connection; the cli daemon does not record.', resolutionParser.bind(null, '--save-video'))
       .option('--secrets <path>', 'path to a file containing secrets in the dotenv format', dotenvFileLoader)
+      .option('--secrets-channel-fd <fd>', 'file descriptor of a socket that answers saved-login requests for "devlogin:" values', numberParser)
       .option('--shared-browser-context', 'reuse the same browser context between all connected HTTP clients.')
       .option('--snapshot-mode <mode>', 'when taking snapshots for responses, specifies the mode to use. Can be "full", "interactive" (only what can be acted on) or "none". Default is "full".')
       .option('--storage-state <path>', 'path to the storage state file for isolated sessions.')

@@ -39,6 +39,7 @@ const tracingStart = defineTool({
       snapshots: true,
       live: true,
     });
+    context.setTracing(true);
     response.addTextResult(`Trace recording started`);
     response.addFileLink('Action log', `${tracesDir}/${name}.trace`);
     response.addFileLink('Network log', `${tracesDir}/${name}.network`);
@@ -68,6 +69,7 @@ const tracingStop = defineTool({
     await browserContext.tracing.stop();
     // eslint-disable-next-line no-restricted-syntax
     delete (browserContext.tracing as any)[traceLegendSymbol];
+    context.setTracing(false);
 
     response.addTextResult(`Trace recording stopped.`);
     response.addFileLink('Trace', `${traceLegend.tracesDir}/${traceLegend.name}.trace`);

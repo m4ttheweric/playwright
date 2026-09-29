@@ -381,7 +381,7 @@ test('an oversized array field survives as an array: real entries plus one trail
     mutating: false,
     waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
     code: [],
-  });
+  }, text => text);
   await traceLog.close();
 
   const lines = fs.readFileSync(path.join(traceLog.folder, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
@@ -450,7 +450,7 @@ test('an oversized nested array does not collapse its enclosing object: script.s
     waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
     code: [],
     script: { filename: 'foo.js', sha256, args, actions },
-  });
+  }, text => text);
   await traceLog.close();
 
   const lines = fs.readFileSync(path.join(traceLog.folder, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
@@ -511,7 +511,7 @@ test('an oversized array in params does not collapse params: sibling keys surviv
     mutating: false,
     waits: { settleMs: 0, awaitedNavigation: false, awaitedRequests: 0 },
     code: [],
-  });
+  }, text => text);
   await traceLog.close();
 
   const lines = fs.readFileSync(path.join(traceLog.folder, 'actions.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));

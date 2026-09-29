@@ -17,6 +17,8 @@
 import * as z from 'zod';
 import { defineTabTool } from './tool';
 import { elementSchema } from './snapshot';
+import { isDevLoginName, DevLoginRefusedError } from './devlogin';
+import { fillDevLogin } from './devLoginFill';
 
 const press = defineTabTool({
   capability: 'core-input',
@@ -62,6 +64,8 @@ const pressSequentially = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
+    if (isDevLoginName(params.text))
+      throw new DevLoginRefusedError(params.text, 'slow-typing');
     response.addCode(`// Press ${params.text}`);
     response.addCode(`await page.keyboard.type('${params.text}');`);
     // The text itself stays out of the acknowledgement: it may be a secret,
@@ -96,6 +100,25 @@ const type = defineTabTool({
 
   handle: async (tab, params, response) => {
     const { locator, resolved } = await tab.targetLocator(params, { trace: true });
+    if (isDevLoginName(params.text)) {
+      if (params.slowly)
+        throw new DevLoginRefusedError(params.text, 'slow-typing');
+      response.addTextResult(`Typed into ${params.element || resolved}`);
+      const fillAndSubmit = async () => {
+        await fillDevLogin(tab, locator, params.text);
+        response.addCode(`await page.${resolved}.fill(process.env['${params.text}']);`);
+        if (params.submit) {
+          response.setIncludeSnapshot();
+          response.addCode(`await page.${resolved}.press('Enter');`);
+          await locator.press('Enter', tab.actionTimeoutOptions);
+        }
+      };
+      if (params.submit)
+        await tab.waitForCompletion(fillAndSubmit);
+      else
+        await fillAndSubmit();
+      return;
+    }
     const secret = tab.context.lookupSecret(params.text);
     // Names the field, never the value, which may be a secret.
     response.addTextResult(`Typed into ${params.element || resolved}`);

@@ -19,6 +19,8 @@ import { escapeWithQuotes } from '@isomorphic/stringUtils';
 
 import { defineTabTool } from './tool';
 import { elementSchema } from './snapshot';
+import { isDevLoginName } from './devlogin';
+import { fillDevLogin } from './devLoginFill';
 
 const fillForm = defineTabTool({
   capability: 'core',
@@ -42,6 +44,11 @@ const fillForm = defineTabTool({
       const { locator, resolved } = await tab.targetLocator({ element: field.name, target: field.target }, { trace: true });
       const locatorSource = `await page.${resolved}`;
       if (field.type === 'textbox' || field.type === 'slider') {
+        if (isDevLoginName(field.value)) {
+          await fillDevLogin(tab, locator, field.value);
+          response.addCode(`${locatorSource}.fill(process.env['${field.value}']);`);
+          continue;
+        }
         const secret = tab.context.lookupSecret(field.value);
         await locator.fill(secret.value, tab.actionTimeoutOptions);
         response.addCode(`${locatorSource}.fill(${secret.code});`);

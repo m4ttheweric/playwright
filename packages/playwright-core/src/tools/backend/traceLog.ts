@@ -358,7 +358,7 @@ export class TraceLog {
   // with no await required at the call site. appendFileSync also means there
   // is no internal buffering to lose on a hard kill: the line is durable the
   // moment this call returns.
-  appendRecord(record: TraceRecord): void {
+  appendRecord(record: TraceRecord, redact: (text: string) => string): void {
     // Walk each top-level field independently rather than handing the whole
     // record to truncateOversizedValues in one call. The 64 KB rule is about
     // any single VALUE inside a record, never the record itself: a busy
@@ -372,7 +372,7 @@ export class TraceLog {
     const safeRecord: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(record))
       safeRecord[key] = truncateOversizedValues(value, MAX_VALUE_BYTES);
-    fs.appendFileSync(this._actionsFile, JSON.stringify(safeRecord) + '\n');
+    fs.appendFileSync(this._actionsFile, redact(JSON.stringify(safeRecord)) + '\n');
   }
 
   async close(): Promise<void> {

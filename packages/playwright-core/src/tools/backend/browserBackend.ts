@@ -29,6 +29,30 @@ import type { ClientInfo, ServerBackend } from '../utils/mcp/server';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+const READBACK_TOOLS = new Set([
+  'browser_evaluate',
+  'browser_run_code_unsafe',
+  'browser_network_request',
+  'browser_network_requests',
+  'browser_take_screenshot',
+  'browser_start_tracing',
+  'browser_start_video',
+  'browser_pdf_save',
+  'browser_annotate',
+]);
+
+function isReadbackCall(name: string, args: Record<string, unknown>): boolean {
+  if (READBACK_TOOLS.has(name))
+    return true;
+  if (name !== 'browser_navigate' || typeof args.url !== 'string')
+    return false;
+  try {
+    return new URL(args.url).protocol === 'javascript:';
+  } catch {
+    return false;
+  }
+}
+
 // A lost CDP connection is a different failure class from a tool call that
 // simply did not work: a reconnected or replaced browser has no page state
 // left, so an agent that retries the call that failed would run it against a
@@ -153,6 +177,21 @@ export class BrowserBackend implements ServerBackend {
     const raw = !!rawArguments._meta?.raw;
     const context = this._context!;
     const response = new Response(context, name, parsedArguments, { relativeTo: cwd, raw, json });
+    // Counted before the lock check so a fill that starts during the check still waits for this call to finish.
+    // Nothing between here and the try below may throw, or the count never drains.
+    const readback = isReadbackCall(name, parsedArguments);
+    if (readback) {
+      context.beginReadbackCall();
+      let locked = true;
+      try {
+        locked = await context.isReadbackLocked();
+      } finally {
+        if (locked)
+          context.endReadbackCall();
+      }
+      if (locked)
+        return formatError(`${name} is unavailable until the page leaves the saved login it was just filled with.`);
+    }
     context.setRunningTool(name);
     // Must run before tool.handle(): establishes this dispatch's epoch so any
     // action it starts (and any still-running background action from a prior,
@@ -177,14 +216,16 @@ export class BrowserBackend implements ServerBackend {
       for (const reason of context.drainPendingUnhandledRejections())
         response.addError(formatRejectionReason(reason));
       responseObject = await response.serialize();
-      this._sessionLog?.logResponse(name, parsedArguments, responseObject);
+      this._sessionLog?.logResponse(name, parsedArguments, responseObject, text => context.redactSecrets(text));
     } catch (error: any) {
       const messages = [String(error), ...context.drainPendingUnhandledRejections().map(formatRejectionReason)];
-      traceError = messages.join('\n\n');
+      traceError = context.redactSecrets(messages.join('\n\n'));
       responseObject = isCdpDisconnect(String(error))
-        ? formatCdpDisconnect(name, urlBefore, String(error))
+        ? formatCdpDisconnect(name, urlBefore && context.redactSecrets(urlBefore), context.redactSecrets(String(error)))
         : formatError(traceError);
     } finally {
+      if (readback)
+        context.endReadbackCall();
       context.setRunningTool(undefined);
       // Tracing is a local side effect, not part of the tool-result contract: a
       // write failure (ENOSPC, EACCES, output dir removed mid-session, ...) must
@@ -207,7 +248,7 @@ export class BrowserBackend implements ServerBackend {
           code: response.code(),
           script: telemetry.script,
           error: traceError ?? (responseObject.isError ? extractErrorText(responseObject) : undefined),
-        });
+        }, text => context.redactSecrets(text));
       } catch (e) {
         debug('pw:tools:error')(e);
       }

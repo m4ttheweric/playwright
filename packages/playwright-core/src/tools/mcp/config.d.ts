@@ -172,6 +172,12 @@ export type Config = {
   secrets?: Record<string, string>;
 
   /**
+   * File descriptor of a duplex socket to the launcher that answers saved-login
+   * requests for `devlogin:` placeholders, one fill at a time.
+   */
+  secretsChannelFd?: number;
+
+  /**
    * The directory to save output files.
    */
   outputDir?: string;
