@@ -32,6 +32,12 @@ const CARD = `<body style="margin:0;font:14px/1.4 Helvetica,Arial,sans-serif;bac
     <ul><li><button>Edit</button> <span>Alpha</span></li><li data-testid="row-b"><button>Edit</button> <span>Bravo</span></li></ul>
   </main></body>`;
 
+// The digest covers the image, the frame and the boxes, and also the scale unless it is 1.
+function digestFor(png: Buffer, sidecar: any, withScale = sidecar.scale !== 1) {
+  const covered = withScale ? { frame: sidecar.frame, boxes: sidecar.boxes, scale: sidecar.scale } : { frame: sidecar.frame, boxes: sidecar.boxes };
+  return crypto.createHash('sha256').update(png).update(JSON.stringify(covered)).digest('hex');
+}
+
 const page = (body: string) => `<!doctype html><html><head><meta charset="utf-8"></head>${body}</html>`;
 
 async function start(startClient: any, server: any, testInfo: any, html = CARD, extra: { args?: string[], env?: Record<string, string> } = {}) {
@@ -69,9 +75,7 @@ test('auto frame snaps to the card, and the tool writes the png and a sidecar co
 
   const sidecar = JSON.parse(fs.readFileSync(result.sidecar, 'utf8'));
   expect(Object.keys(sidecar).sort()).toEqual(['boxes', 'dark', 'digest', 'frame', 'frameSnap', 'image', 'missed', 'scale', 'schemaVersion', 'source']);
-  const digest = crypto.createHash('sha256').update(fs.readFileSync(result.png))
-      .update(JSON.stringify({ frame: sidecar.frame, boxes: sidecar.boxes })).digest('hex');
-  expect(sidecar.digest).toBe(digest);
+  expect(sidecar.digest).toBe(digestFor(fs.readFileSync(result.png), sidecar));
 });
 
 test('a selector that is not valid syntax fails the call, and the next capture still works', async ({ startClient, server }, testInfo) => {
@@ -188,7 +192,7 @@ test('capturing again with the same out replaces both files with a matching pair
   const { client, capture } = await start(startClient, server, testInfo);
   const digestOf = (result: any) => {
     const sidecar = JSON.parse(fs.readFileSync(result.sidecar, 'utf8'));
-    return { sidecar, expected: crypto.createHash('sha256').update(fs.readFileSync(result.png)).update(JSON.stringify({ frame: sidecar.frame, boxes: sidecar.boxes })).digest('hex') };
+    return { sidecar, expected: digestFor(fs.readFileSync(result.png), sidecar) };
   };
   const first = await capture({ targets: { owner: '[data-testid=owner]' }, out: 'again' });
   const firstPng = fs.readFileSync(first.png);
@@ -619,4 +623,22 @@ test('a tagged target the page replaces before the measurement fails the capture
   expect(fs.existsSync(path.join(captureDir, 'replaced.png'))).toBe(false);
   expect(fs.existsSync(path.join(captureDir, 'replaced.capture.json'))).toBe(false);
   await expectNoTags(client);
+});
+
+test('the digest covers the scale unless it is 1', async ({ startClient, server, mcpBrowser }, testInfo) => {
+  const { capture } = await start(startClient, server, testInfo);
+  const result = await capture({ targets: { owner: '[data-testid=owner]' }, out: 'digest-scale' });
+  const sidecar = JSON.parse(fs.readFileSync(result.sidecar, 'utf8'));
+  const png = fs.readFileSync(result.png);
+  const chromium = ['chromium', 'chrome'].includes(mcpBrowser!);
+  // Chromium captures at 2x and every other browser at 1x, so the two projects together cover both branches.
+  expect(sidecar.scale).toBe(chromium ? 2 : 1);
+  const without = crypto.createHash('sha256').update(png).update(JSON.stringify({ frame: sidecar.frame, boxes: sidecar.boxes })).digest('hex');
+  const withScale = crypto.createHash('sha256').update(png).update(JSON.stringify({ frame: sidecar.frame, boxes: sidecar.boxes, scale: sidecar.scale })).digest('hex');
+  if (chromium) {
+    expect(sidecar.digest).toBe(withScale);
+    expect(sidecar.digest).not.toBe(without);
+  } else {
+    expect(sidecar.digest).toBe(without);
+  }
 });

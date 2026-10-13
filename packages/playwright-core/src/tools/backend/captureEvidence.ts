@@ -249,6 +249,12 @@ async function shoot(page: playwright.Page): Promise<Shot> {
   return { png, scale: 2, ...size };
 }
 
+// A 1x sidecar keeps the digest it has always had; any other scale is covered too, so it cannot be edited out unnoticed.
+function sidecarDigest(png: Buffer, frame: Box, boxes: Record<string, Box>, scale: number): string {
+  const covered = scale === 1 ? { frame, boxes } : { frame, boxes, scale };
+  return crypto.createHash('sha256').update(png).update(JSON.stringify(covered)).digest('hex');
+}
+
 function captureDirectory(tab: Tab): string {
   const configured = tab.context.config.captureDir;
   return configured ? path.resolve(configured) : outputDir(tab.context.options);
@@ -355,7 +361,7 @@ async function captureEvidence(tab: Tab, params: z.output<typeof captureSchema>)
       Math.min(viewport.w, base[0] + base[2] + pad) - fx, Math.min(viewport.h, base[1] + base[3] + pad) - fy];
 
     const image = `${out}.png`;
-    const digest = crypto.createHash('sha256').update(shot.png).update(JSON.stringify({ frame: frameBox, boxes })).digest('hex');
+    const digest = sidecarDigest(shot.png, frameBox, boxes, shot.scale);
     const body = { schemaVersion: SCHEMA, source: 'live', image, frame: frameBox, frameSnap, boxes, missed, dark: measured.dark, scale: shot.scale, digest };
     const dir = captureDirectory(tab);
     await fs.promises.mkdir(dir, { recursive: true });
