@@ -57,6 +57,20 @@ type CDPCommand = {
 
 type CDPResponse = CDPMessage;
 
+const DEFAULT_SEND_TIMEOUT_MS = 30_000;
+const DEFAULT_PAGE_PACED_TIMEOUT_MS = 600_000;
+// These run for as long as the page's own script or load takes, and Playwright bounds them itself.
+const PAGE_PACED_METHODS = new Set([
+  'Runtime.evaluate', 'Runtime.callFunctionOn', 'Runtime.awaitPromise', 'Page.navigate', 'Page.reload', 'Page.printToPDF',
+  // A rejected input event reads as a retriable error, so Playwright would deliver it twice.
+  'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.insertText', 'Input.dispatchDragEvent', 'Input.dispatchTouchEvent',
+]);
+
+function envMilliseconds(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export class CDPRelayServer {
   private _wsHost: string;
   private _httpHost: string;
@@ -85,10 +99,14 @@ export class CDPRelayServer {
     this._extensionId = extensionId;
     this._protocolVersion = parseInt(process.env.PLAYWRIGHT_EXTENSION_PROTOCOL ?? protocol.VERSION.toString(), 10);
 
+    const sendTimeout = envMilliseconds('PLAYWRIGHT_MCP_RELAY_SEND_TIMEOUT', DEFAULT_SEND_TIMEOUT_MS);
+    const pagePacedTimeout = Math.max(sendTimeout, envMilliseconds('PLAYWRIGHT_MCP_RELAY_PAGE_PACED_TIMEOUT', DEFAULT_PAGE_PACED_TIMEOUT_MS));
     const sendCommand = (method: string, params: any): Promise<any> => {
       if (!this._extensionConnection)
         throw new Error('Extension not connected');
-      return this._extensionConnection.send(method as keyof ExtensionCommandV2, params);
+      const cdpMethod = method === 'chrome.debugger.sendCommand' ? params?.[1] : undefined;
+      const timeout = PAGE_PACED_METHODS.has(cdpMethod) ? pagePacedTimeout : sendTimeout;
+      return this._extensionConnection.send(method as keyof ExtensionCommandV2, params, timeout);
     };
     this._handler = new ExtensionProtocolV2(sendCommand);
 
@@ -331,7 +349,7 @@ type ExtensionResponse = {
 
 class ExtensionConnection {
   private readonly _ws: WebSocket;
-  private readonly _callbacks = new Map<number, { resolve: (o: any) => void, reject: (e: Error) => void, error: Error }>();
+  private readonly _callbacks = new Map<number, { resolve: (o: any) => void, reject: (e: Error) => void, error: Error, timer: NodeJS.Timeout }>();
   private _lastId = 0;
 
   onmessage?: <M extends keyof ExtensionEventsV2>(method: M, params: ExtensionEventsV2[M]['params']) => void;
@@ -344,14 +362,19 @@ class ExtensionConnection {
     this._ws.on('error', this._onError.bind(this));
   }
 
-  async send<M extends keyof ExtensionCommandV2>(method: M, params: ExtensionCommandV2[M]['params']): Promise<any> {
+  async send<M extends keyof ExtensionCommandV2>(method: M, params: ExtensionCommandV2[M]['params'], timeoutMs: number): Promise<any> {
     if (this._ws.readyState !== ws.OPEN)
       throw new Error(`Unexpected WebSocket state: ${this._ws.readyState}`);
     const id = ++this._lastId;
     this._ws.send(JSON.stringify({ id, method, params }));
     const error = new Error(`Protocol error: ${method}`);
+    const label = method === 'chrome.debugger.sendCommand' ? (params as unknown[] | undefined)?.[1] : method;
     return new Promise((resolve, reject) => {
-      this._callbacks.set(id, { resolve, reject, error });
+      const timer = setTimeout(() => {
+        this._callbacks.delete(id);
+        reject(new Error(`Relay timeout: ${label} got no reply from the extension within ${timeoutMs}ms`));
+      }, timeoutMs);
+      this._callbacks.set(id, { resolve, reject, error, timer });
     });
   }
 
@@ -383,6 +406,7 @@ class ExtensionConnection {
     if (object.id && this._callbacks.has(object.id)) {
       const callback = this._callbacks.get(object.id)!;
       this._callbacks.delete(object.id);
+      clearTimeout(callback.timer);
       if (object.error) {
         const error = callback.error;
         error.message = object.error;
@@ -409,8 +433,10 @@ class ExtensionConnection {
   }
 
   private _dispose() {
-    for (const callback of this._callbacks.values())
+    for (const callback of this._callbacks.values()) {
+      clearTimeout(callback.timer);
       callback.reject(new Error('WebSocket closed'));
+    }
     this._callbacks.clear();
   }
 }

@@ -183,6 +183,11 @@ export type Config = {
   outputDir?: string;
 
   /**
+   * The directory browser_capture_evidence writes captures into. Defaults to the output directory.
+   */
+  captureDir?: string;
+
+  /**
    * Threshold for evicting old output files, in bytes.
    */
   outputMaxSize?: number;

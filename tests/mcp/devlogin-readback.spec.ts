@@ -26,6 +26,7 @@ const READBACK = [
   { name: 'browser_network_requests', arguments: {} },
   { name: 'browser_network_request', arguments: { index: 1 } },
   { name: 'browser_take_screenshot', arguments: {} },
+  { name: 'browser_capture_evidence', arguments: { targets: { field: '#pw' }, out: 'readback' } },
 ];
 const RECORDING = [
   { name: 'browser_start_tracing', arguments: {} },
