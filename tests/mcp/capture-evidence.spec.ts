@@ -38,6 +38,9 @@ function digestFor(png: Buffer, sidecar: any, withScale = sidecar.scale !== 1) {
   return crypto.createHash('sha256').update(png).update(JSON.stringify(covered)).digest('hex');
 }
 
+// Every Chromium channel (chrome, msedge, ...) takes the 2x path; only these engines do not.
+const isChromium = (browser?: string) => !['firefox', 'webkit'].includes(browser!);
+
 const page = (body: string) => `<!doctype html><html><head><meta charset="utf-8"></head>${body}</html>`;
 
 async function start(startClient: any, server: any, testInfo: any, html = CARD, extra: { args?: string[], env?: Record<string, string> } = {}) {
@@ -255,7 +258,7 @@ function upscaled(image: any) {
 
 for (const strategy of ['clip', 'override']) {
   test(`a 2x capture (${strategy}) matches a native DPR 2 render, and an upscaled 1x does not`, async ({ startClient, server, mcpBrowser }, testInfo) => {
-    test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+    test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
     const { client, capture } = await start(startClient, server, testInfo, SHARP, { env: { PLAYWRIGHT_MCP_CAPTURE_2X: strategy } });
     const result = await capture({ targets: { line: '[data-testid=line]' }, out: 'sharp' });
     expect(result.scale).toBe(2);
@@ -281,7 +284,7 @@ for (const strategy of ['clip', 'override']) {
 }
 
 test('after an override capture the page is back at its own device scale', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   const { client, capture } = await start(startClient, server, testInfo, SHARP, { env: { PLAYWRIGHT_MCP_CAPTURE_2X: 'override' } });
   await capture({ targets: { line: '[data-testid=line]' }, out: 'restore' });
   const ratio = await client.callTool({ name: 'browser_evaluate', arguments: { function: '() => `dpr=${devicePixelRatio} width=${innerWidth} height=${innerHeight}`' } });
@@ -289,7 +292,7 @@ test('after an override capture the page is back at its own device scale', async
 });
 
 test('a fractional device scale still yields exactly twice the viewport', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   server.setContent('/', page(SHARP), 'text/html');
   const captureDir = testInfo.outputPath('captures');
   const { client } = await startClient({
@@ -305,7 +308,7 @@ test('a fractional device scale still yields exactly twice the viewport', async 
 });
 
 test('a target below the fold: the reported box lands on the element in the image', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   const { capture } = await start(startClient, server, testInfo, `<body style="margin:0;background:#fff">
     <div style="height:2400px"></div>
     <section style="margin:24px;padding:16px;width:300px;height:120px;border:1px solid #ccd">
@@ -320,7 +323,7 @@ test('a target below the fold: the reported box lands on the element in the imag
 });
 
 test('a target below the fold on a smooth-scrolling page: the box still lands on the element', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   const { capture } = await start(startClient, server, testInfo, `<style>html { scroll-behavior: smooth }</style><body style="margin:0;background:#fff">
     <div style="height:2400px"></div>
     <section style="margin:24px;padding:16px;width:300px;height:120px;border:1px solid #ccd">
@@ -349,7 +352,7 @@ test('a page that keeps moving its target fails the capture, writes nothing and 
 });
 
 test('a page that reflows at 2x fails the capture, writes nothing and gets its device scale back', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   const { client, capture, captureDir } = await start(startClient, server, testInfo, `<style>@media (min-resolution: 2dppx) { [data-testid=card] { margin-left: 200px !important } }</style>${SHARP}`, { env: { PLAYWRIGHT_MCP_CAPTURE_2X: 'override' } });
   const result = await capture({ targets: { line: '[data-testid=line]' }, out: 'reflow' });
   expect(result.isError).toBe(true);
@@ -361,7 +364,7 @@ test('a page that reflows at 2x fails the capture, writes nothing and gets its d
 });
 
 test('a page whose script moves the target at 2x and leaves it there fails the capture too', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   const script = `<script>matchMedia('(min-resolution: 2dppx)').addEventListener('change', e => { if (e.matches) document.querySelector('[data-testid=card]').style.marginLeft = '200px'; });</script>`;
   const { client, capture, captureDir } = await start(startClient, server, testInfo, `${SHARP}${script}`, { env: { PLAYWRIGHT_MCP_CAPTURE_2X: 'override' } });
   const result = await capture({ targets: { line: '[data-testid=line]' }, out: 'moved' });
@@ -374,7 +377,7 @@ test('a page whose script moves the target at 2x and leaves it there fails the c
 });
 
 test('a page whose script moves the target when the device scale returns fails the capture too', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   // A media-query listener fires at the next rendering step, which races the tool's own measurements; this moves the target on the first measurement after 2x ends.
   const script = `<script>let seen2x = false; const measure = Element.prototype.getBoundingClientRect;
     Element.prototype.getBoundingClientRect = function () {
@@ -559,7 +562,7 @@ test('a hidden first target does not cost the five-second visibility wait', asyn
 });
 
 test('a pinch-zoomed page is refused before any screenshot', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the 2x path is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the 2x path is Chromium only');
   const { client, capture, captureDir } = await start(startClient, server, testInfo);
   const zoomed = await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async page => { const cdp = await page.context().newCDPSession(page); await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1.5 }); }` } });
   expect(zoomed.isError).toBeFalsy();
@@ -589,7 +592,7 @@ test('a page without a working 2D canvas still captures, and dark is false', asy
 });
 
 test('an override capture whose page hangs at 2x says the page may still be at the capture scale', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the override strategy is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the override strategy is Chromium only');
   test.setTimeout(30_000);
   const script = `<script>matchMedia('(min-resolution: 2dppx)').addEventListener('change', e => { if (e.matches) for (;;) {} });</script>`;
   const { capture } = await start(startClient, server, testInfo, `${SHARP}${script}`, { env: { PLAYWRIGHT_MCP_CAPTURE_2X: 'override', PLAYWRIGHT_MCP_CAPTURE_TIMEOUT: '1500' } });
@@ -599,7 +602,7 @@ test('an override capture whose page hangs at 2x says the page may still be at t
 });
 
 test('an override capture succeeds when the page grows below the fold without moving the target', async ({ startClient, server, mcpBrowser }, testInfo) => {
-  test.skip(!['chromium', 'chrome'].includes(mcpBrowser!), 'the override strategy is Chromium only');
+  test.skip(!isChromium(mcpBrowser), 'the override strategy is Chromium only');
   const script = `<script>const measure = Element.prototype.getBoundingClientRect;
     Element.prototype.getBoundingClientRect = function () { const row = document.createElement('div'); row.style.height = '10px'; document.body.append(row); return measure.call(this); };</script>`;
   const { capture } = await start(startClient, server, testInfo, `${SHARP}<div style="height:1500px"></div>${script}`, { env: { PLAYWRIGHT_MCP_CAPTURE_2X: 'override' } });
@@ -630,15 +633,11 @@ test('the digest covers the scale unless it is 1', async ({ startClient, server,
   const result = await capture({ targets: { owner: '[data-testid=owner]' }, out: 'digest-scale' });
   const sidecar = JSON.parse(fs.readFileSync(result.sidecar, 'utf8'));
   const png = fs.readFileSync(result.png);
-  const chromium = ['chromium', 'chrome'].includes(mcpBrowser!);
-  // Chromium captures at 2x and every other browser at 1x, so the two projects together cover both branches.
-  expect(sidecar.scale).toBe(chromium ? 2 : 1);
+  // Chromium captures at 2x and the other engines at 1x, so the projects together cover both branches.
+  expect(sidecar.scale).toBe(isChromium(mcpBrowser) ? 2 : 1);
   const without = crypto.createHash('sha256').update(png).update(JSON.stringify({ frame: sidecar.frame, boxes: sidecar.boxes })).digest('hex');
   const withScale = crypto.createHash('sha256').update(png).update(JSON.stringify({ frame: sidecar.frame, boxes: sidecar.boxes, scale: sidecar.scale })).digest('hex');
-  if (chromium) {
-    expect(sidecar.digest).toBe(withScale);
+  expect(sidecar.digest).toBe(sidecar.scale === 1 ? without : withScale);
+  if (sidecar.scale !== 1)
     expect(sidecar.digest).not.toBe(without);
-  } else {
-    expect(sidecar.digest).toBe(without);
-  }
 });
