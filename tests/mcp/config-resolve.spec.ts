@@ -382,6 +382,16 @@ test.describe('outputDir', () => {
     await expect(resolveCLIConfigForMCP({ outputDir: '/' }, emptyEnv))
         .rejects.toThrow(/--output-dir cannot point to a system directory/);
   });
+
+  test('resolveCLIConfigForMCP throws when --capture-dir is /', async () => {
+    await expect(resolveCLIConfigForMCP({ captureDir: '/' }, emptyEnv))
+        .rejects.toThrow(/--capture-dir cannot point to a system directory: \/\./);
+  });
+
+  test('resolveCLIConfigForMCP throws when PLAYWRIGHT_MCP_CAPTURE_DIR is /', async () => {
+    await expect(resolveCLIConfigForMCP({}, { PLAYWRIGHT_MCP_CAPTURE_DIR: '/' }))
+        .rejects.toThrow(/--capture-dir cannot point to a system directory/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -421,6 +431,11 @@ test.describe('resolveCLIConfigForCLI - headless and viewport', () => {
   test('headless by default', async ({}, testInfo) => {
     const config = await resolveCLI(testInfo.outputPath('profiles'), 'default', {});
     expect(config.browser.launchOptions.headless).toBe(true);
+  });
+
+  test('PLAYWRIGHT_MCP_CAPTURE_DIR cannot point to a system directory', async ({}, testInfo) => {
+    await expect(resolveCLIConfigForCLI(testInfo.outputPath('profiles'), 'default', {}, { PLAYWRIGHT_MCP_CAPTURE_DIR: '/' }))
+        .rejects.toThrow(/--capture-dir cannot point to a system directory/);
   });
 
   test('--headed sets headless=false', async ({}, testInfo) => {

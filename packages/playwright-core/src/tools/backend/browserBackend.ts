@@ -35,6 +35,7 @@ const READBACK_TOOLS = new Set([
   'browser_network_request',
   'browser_network_requests',
   'browser_take_screenshot',
+  'browser_capture_evidence',
   'browser_start_tracing',
   'browser_start_video',
   'browser_pdf_save',

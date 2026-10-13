@@ -60,6 +60,7 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
       .option('--image-responses <mode>', 'whether to send image responses to the client. Can be "allow" or "omit", Defaults to "allow".', enumParser.bind(null, '--image-responses', ['allow', 'omit']))
       .option('--no-sandbox', 'disable the sandbox for all process types that are normally sandboxed.')
       .option('--output-dir <path>', 'path to the directory for output files.')
+      .option('--capture-dir <path>', 'path to the directory browser_capture_evidence writes its png and sidecar into. Defaults to the output directory.')
       .option('--output-max-size <bytes>', 'Threshold for evicting old output files, in bytes.', numberParser)
       .option('--port <port>', 'port to listen on for SSE transport.')
       .option('--proxy-bypass <bypass>', 'comma-separated domains to bypass proxy, for example ".com,chromium.org,.domain.com"')

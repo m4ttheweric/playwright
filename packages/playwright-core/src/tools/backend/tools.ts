@@ -15,6 +15,7 @@
  */
 
 import * as z from 'zod';
+import captureEvidence from './captureEvidence';
 import common from './common';
 import config from './config';
 import console from './console';
@@ -46,6 +47,7 @@ import type { Tool } from './tool';
 import type { ContextConfig } from './context';
 
 export const browserTools: Tool<any>[] = [
+  ...captureEvidence,
   ...common,
   ...config,
   ...console,

@@ -63,6 +63,7 @@ export type CLIOptions = {
   mobile?: boolean;
   sandbox?: boolean;
   outputDir?: string;
+  captureDir?: string;
   outputMaxSize?: number;
   port?: number;
   proxyBypass?: string;
@@ -138,16 +139,25 @@ export async function resolveCLIConfigForMCP(cliOptions: CLIOptions, env?: NodeJ
     browser.launchOptions.headless = os.platform() === 'linux' && !process.env.DISPLAY;
 
   validateOutputDir(result.outputDir);
+  validateCaptureDir(result.captureDir);
   validateSecrets(result.secrets);
 
   return { ...result, browser, configFile };
 }
 
 function validateOutputDir(outputDir: string | undefined) {
-  if (!outputDir)
+  validateWritableDir('--output-dir', outputDir);
+}
+
+function validateCaptureDir(captureDir: string | undefined) {
+  validateWritableDir('--capture-dir', captureDir);
+}
+
+function validateWritableDir(option: string, dir: string | undefined) {
+  if (!dir)
     return;
-  if (isSystemDirectory(outputDir))
-    throw new Error(`--output-dir cannot point to a system directory: ${path.resolve(outputDir)}.`);
+  if (isSystemDirectory(dir))
+    throw new Error(`${option} cannot point to a system directory: ${path.resolve(dir)}.`);
 }
 
 function validateSecrets(secrets: Record<string, string> | undefined) {
@@ -203,6 +213,7 @@ export async function resolveCLIConfigForCLI(daemonProfilesDir: string, sessionN
   const browser = await validateBrowserConfig(result.browser);
 
   validateOutputDir(result.outputDir);
+  validateCaptureDir(result.captureDir);
   validateSecrets(result.secrets);
 
   if (!result.extension && !browser.isolated && !browser.userDataDir && !browser.remoteEndpoint && !browser.cdpEndpoint) {
@@ -392,6 +403,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
     sharedBrowserContext: cliOptions.sharedBrowserContext,
     snapshot: cliOptions.snapshotMode ? { mode: cliOptions.snapshotMode } : undefined,
     outputDir: cliOptions.outputDir,
+    captureDir: cliOptions.captureDir,
     outputMaxSize: cliOptions.outputMaxSize,
     imageResponses: cliOptions.imageResponses,
     testIdAttribute: cliOptions.testIdAttribute,
@@ -446,6 +458,7 @@ export function configFromEnv(env?: NodeJS.ProcessEnv): Config & { configFile?: 
   options.mobile = envToBoolean(e.PLAYWRIGHT_MCP_MOBILE);
   options.sandbox = envToBoolean(e.PLAYWRIGHT_MCP_SANDBOX);
   options.outputDir = envToString(e.PLAYWRIGHT_MCP_OUTPUT_DIR);
+  options.captureDir = envToString(e.PLAYWRIGHT_MCP_CAPTURE_DIR);
   options.outputMaxSize = numberParser(e.PLAYWRIGHT_MCP_OUTPUT_MAX_SIZE);
   options.port = numberParser(e.PLAYWRIGHT_MCP_PORT);
   options.proxyBypass = envToString(e.PLAYWRIGHT_MCP_PROXY_BYPASS);
