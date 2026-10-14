@@ -553,6 +553,53 @@ test('a selector snap frames the chosen element with 12px of padding', async ({ 
   expect(result.frame).toEqual([88, 88, 324, 144]);
 });
 
+// A tab strip whose tab link runs past the strip's bottom edge by `overhang` px, as an active tab's outline does.
+const tabStrip = (overhang: number) => `<body style="margin:0;background:#fff">
+  <nav data-testid="strip" style="position:absolute;left:100px;top:100px;width:400px;height:40px;background:#eef">
+    <a data-testid="tab" href="#" style="position:absolute;left:20px;top:4px;width:80px;height:${36 + overhang}px">Builds</a></nav></body>`;
+
+const holdsEveryBox = (sidecar: any) => Object.values(sidecar.boxes as Record<string, number[]>).every(([x, y, w, h]) => {
+  const [fx, fy, fw, fh] = sidecar.frame;
+  return x >= fx && y >= fy && x + w <= fx + fw && y + h <= fy + fh;
+});
+
+for (const overhang of [2, 8]) {
+  test(`a target that overhangs the frame selector by ${overhang}px is captured, and the frame holds its box`, async ({ startClient, server }, testInfo) => {
+    const { capture } = await start(startClient, server, testInfo, tabStrip(overhang));
+    const result = await capture({ frame: '[data-testid=strip]', targets: { tab: '[data-testid=tab]' }, out: `overhang-${overhang}` });
+    expect(result.failedStep).toBeUndefined();
+    expect(result.frameSnap).toBe('selector');
+    expect(result.boxes.tab).toEqual([120, 104, 80, 36 + overhang]);
+    const sidecar = JSON.parse(fs.readFileSync(result.sidecar, 'utf8'));
+    expect(holdsEveryBox(sidecar)).toBe(true);
+  });
+}
+
+test('a target that overhangs the frame selector by 9px is refused', async ({ startClient, server }, testInfo) => {
+  const { capture, captureDir } = await start(startClient, server, testInfo, tabStrip(9));
+  expect(await capture({ frame: '[data-testid=strip]', targets: { tab: '[data-testid=tab]' }, out: 'overhang-9' }))
+      .toEqual({ failedStep: 'frame', error: 'the frame selector does not contain every target' });
+  expect(fs.existsSync(path.join(captureDir, 'overhang-9.png'))).toBe(false);
+});
+
+// The frame sits 8px inside the 1000x700 viewport on every side, so the 12px pad is clamped at each edge.
+// The targets share one edge because placeFrame refuses targets spread over more than 90% of the viewport height.
+for (const [edge, y] of [['top', 0], ['bottom', 670]] as const) {
+  test(`targets that overhang a frame selector into the ${edge} viewport corners stay inside the clamped frame`, async ({ startClient, server }, testInfo) => {
+    const { capture } = await start(startClient, server, testInfo, `<body style="margin:0;overflow:hidden;background:#fff">
+      <section data-testid="panel" style="position:absolute;left:8px;top:8px;width:984px;height:684px;background:#eef">
+        <div data-testid="left" style="position:absolute;left:-8px;${edge}:-8px;width:40px;height:30px;background:#2563eb"></div>
+        <div data-testid="right" style="position:absolute;right:-8px;${edge}:-8px;width:40px;height:30px;background:#2563eb"></div></section></body>`);
+    const result = await capture({ frame: '[data-testid=panel]', targets: { left: '[data-testid=left]', right: '[data-testid=right]' }, out: `overhang-${edge}` });
+    expect(result.failedStep).toBeUndefined();
+    expect(result.missed).toEqual([]);
+    expect(result.boxes).toEqual({ left: [0, y, 40, 30], right: [960, y, 40, 30] });
+    expect(result.frame).toEqual([0, 0, 1000, 700]);
+    const sidecar = JSON.parse(fs.readFileSync(result.sidecar, 'utf8'));
+    expect(holdsEveryBox(sidecar)).toBe(true);
+  });
+}
+
 test('a hidden first target does not cost the five-second visibility wait', async ({ startClient, server }, testInfo) => {
   const { capture } = await start(startClient, server, testInfo, `<body><p data-testid="hidden" style="display:none">Hidden</p><p data-testid="shown">Shown</p></body>`);
   const started = Date.now();
