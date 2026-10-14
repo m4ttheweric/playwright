@@ -30,6 +30,9 @@ const SCHEMA = 'capture-evidence/1';
 const OUT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const CALL_TIMEOUT_MS = 10_000;
 const SETTLE_MS = 350;
+const FRAME_PAD = 12;
+// Must stay under FRAME_PAD less 2px of rounding, so the written frame still holds an overhanging box.
+const FRAME_SLACK = 8;
 
 type Box = [number, number, number, number];
 type Missed = { key: string, reason: 'no-match' | 'ambiguous' | 'not-visible' | 'out-of-view', count?: number };
@@ -38,7 +41,7 @@ type Shot = { png: Buffer, scale: 1 | 2, width: number, height: number };
 
 const captureSchema = z.object({
   targets: z.record(z.string(), z.string()).describe('Elements to measure: a short key for each, mapped to a selector that matches exactly one element.'),
-  frame: z.string().default('auto').describe('"auto" crops to the nearest card that holds every target. A selector crops to that element instead; it must match one element, contain every target and fit the viewport.'),
+  frame: z.string().default('auto').describe('"auto" crops to the nearest card that holds every target. A selector crops to that element instead; it must match one element, contain every target to within a few pixels and fit the viewport.'),
   out: z.string().describe('Base file name of the capture, for example "board.c1". The tool writes <out>.png and <out>.capture.json.'),
 });
 
@@ -70,12 +73,12 @@ function clearTags() {
   document.querySelectorAll('[data-ev-frame]').forEach(e => e.removeAttribute('data-ev-frame'));
 }
 
-function checkFrame() {
+function checkFrame(slack: number) {
   const f = document.querySelector('[data-ev-frame]')!.getBoundingClientRect();
   // A hidden target has no rectangle to contain; measuring reports it as not visible.
   const contains = Array.from(document.querySelectorAll('[data-ev-key]')).every(e => {
     const r = e.getBoundingClientRect();
-    return r.width <= 0 || r.height <= 0 || r.left >= f.left - 1 && r.top >= f.top - 1 && r.right <= f.right + 1 && r.bottom <= f.bottom + 1;
+    return r.width <= 0 || r.height <= 0 || r.left >= f.left - slack && r.top >= f.top - slack && r.right <= f.right + slack && r.bottom <= f.bottom + slack;
   });
   return { contains, fits: f.width <= innerWidth && f.height <= innerHeight };
 }
@@ -321,7 +324,7 @@ async function captureEvidence(tab: Tab, params: z.output<typeof captureSchema>)
       }, undefined, { timeout: 2000 }));
       if (!taggable)
         return { failedStep: 'frame', error: 'a frame inside a shadow root or an iframe cannot be captured' };
-      const fit = await bounded('frame', page.evaluate(checkFrame));
+      const fit = await bounded('frame', page.evaluate(checkFrame, FRAME_SLACK));
       if (!fit.contains)
         return { failedStep: 'frame', error: 'the frame selector does not contain every target' };
       if (!fit.fits)
@@ -355,7 +358,7 @@ async function captureEvidence(tab: Tab, params: z.output<typeof captureSchema>)
     const left = Math.min(...values.map(b => b[0])); const top = Math.min(...values.map(b => b[1]));
     const base = (measured.frame as Box | null) ?? [left, top,
       Math.max(...values.map(b => b[0] + b[2])) - left, Math.max(...values.map(b => b[1] + b[3])) - top];
-    const pad = frameSnap === 'union' ? 24 : 12;
+    const pad = frameSnap === 'union' ? 24 : FRAME_PAD;
     const fx = Math.max(0, base[0] - pad); const fy = Math.max(0, base[1] - pad);
     const frameBox: Box = [fx, fy,
       Math.min(viewport.w, base[0] + base[2] + pad) - fx, Math.min(viewport.h, base[1] + base[3] + pad) - fy];
