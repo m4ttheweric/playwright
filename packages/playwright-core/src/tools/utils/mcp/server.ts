@@ -73,6 +73,10 @@ export type ServerBackendFactory = {
   toolSchemas: ToolSchema<any>[];
   create: (clientInfo: ClientInfo) => Promise<ServerBackend>;
   disposed: (backend: ServerBackend) => Promise<void>;
+  // Disposes the backend once no tool call has run for this long. The next
+  // call creates a fresh one, so a long-lived idle client stops holding
+  // browser resources it is not using.
+  idleReleaseMs?: number;
 };
 
 export async function connect(factory: ServerBackendFactory, transport: Transport, transportInitialized: Promise<void>, runHeartbeat: boolean) {
@@ -93,13 +97,29 @@ export function createServer(name: string, version: string, factory: ServerBacke
   });
 
   let backendPromise: Promise<ServerBackend> | undefined;
+  let callsInFlight = 0;
+  let idleTimer: NodeJS.Timeout | undefined;
 
-  const onClose = () => backendPromise?.then(b => backendManager.disposeBackend(b)).catch(serverDebug);
+  const releaseIdleBackend = () => {
+    idleTimer = undefined;
+    const released = backendPromise;
+    backendPromise = undefined;
+    serverDebug('releasing idle backend');
+    released?.then(b => backendManager.disposeBackend(b)).catch(serverDebug);
+  };
+
+  const onClose = () => {
+    clearTimeout(idleTimer);
+    backendPromise?.then(b => backendManager.disposeBackend(b)).catch(serverDebug);
+  };
   addServerListener(server, 'close', onClose);
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     serverDebug('callTool', request);
 
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+    callsInFlight++;
     try {
       if (!backendPromise) {
         backendPromise = initializeServer(server, factory, transportInitialized, runHeartbeat).catch(e => {
@@ -124,6 +144,12 @@ export function createServer(name: string, version: string, factory: ServerBacke
         content: [{ type: 'text', text: '### Error\n' + String(error) }],
         isError: true,
       };
+    } finally {
+      callsInFlight--;
+      if (!callsInFlight && backendPromise && factory.idleReleaseMs) {
+        idleTimer = setTimeout(releaseIdleBackend, factory.idleReleaseMs);
+        idleTimer.unref();
+      }
     }
   });
   return server;

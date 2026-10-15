@@ -157,8 +157,19 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
             sharedBrowserPromise = undefined;
             await browserContext.close().catch(() => { });
             await browserContext.browser()?.close().catch(() => { });
-          }
+          },
+          idleReleaseMs: config.extension ? extensionIdleReleaseMs() : undefined,
         };
         await mcpServer.start(factory, config.server);
       });
+}
+
+// An extension session holds a tab group in the user's own browser for as long
+// as it stays connected, and MCP clients stay connected for their whole
+// lifetime, so an idle session hands its group back.
+const defaultExtensionIdleReleaseMs = 30 * 60 * 1000;
+
+function extensionIdleReleaseMs(): number | undefined {
+  const value = Number(process.env.PLAYWRIGHT_MCP_IDLE_RELEASE_MS ?? defaultExtensionIdleReleaseMs);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
