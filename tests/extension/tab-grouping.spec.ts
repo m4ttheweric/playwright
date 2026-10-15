@@ -16,6 +16,10 @@
 
 import { test, expect, extensionId, clickAllowAndSelect, startWithExtensionFlag } from './extension-fixtures';
 
+import type { BrowserWithExtension } from './extension-fixtures';
+import type { StartClient } from '../mcp/fixtures';
+import type { TestServer } from '../config/testserver';
+
 test('connect page is not in group before selection', async ({ startExtensionClient, server }) => {
   const { browserContext, client } = await startExtensionClient();
 
@@ -393,4 +397,74 @@ test('tab is re-added to Playwright group after reconnecting', async ({ browserW
       return { color: g.color, title: g.title };
     });
   }).toEqual({ color: 'blue', title: expect.stringMatching(/ #2$/) });
+});
+
+async function connectIdleClient(browserWithExtension: BrowserWithExtension, startClient: StartClient, server: TestServer, idleReleaseMs: number) {
+  const browserContext = await browserWithExtension.launch();
+  const page = await browserContext.newPage();
+  await page.goto(server.HELLO_WORLD);
+
+  const client = await startWithExtensionFlag(browserWithExtension, startClient, { PLAYWRIGHT_MCP_IDLE_RELEASE_MS: String(idleReleaseMs) });
+  const navigateAndApprove = async () => {
+    const connectPagePromise = browserContext.waitForEvent('page', p =>
+      p.url().startsWith(`chrome-extension://${extensionId}/connect.html`)
+    );
+    const navigatePromise = client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
+    await clickAllowAndSelect(await connectPagePromise, 'Title');
+    return await navigatePromise;
+  };
+  await navigateAndApprove();
+
+  const [sw] = browserContext.serviceWorkers();
+  const titleTabGroup = () => sw.evaluate(async () => {
+    const chrome = (globalThis as any).chrome;
+    const [tab] = await chrome.tabs.query({ title: 'Title' });
+    if (!tab || tab.groupId === -1)
+      return null;
+    return (await chrome.tabGroups.get(tab.groupId)).title as string;
+  });
+  return { page, client, navigateAndApprove, titleTabGroup };
+}
+
+test('idle client releases its tab group', async ({ browserWithExtension, startClient, server }) => {
+  const { page, titleTabGroup } = await connectIdleClient(browserWithExtension, startClient, server, 1000);
+  expect(await titleTabGroup()).toMatch(/ #1$/);
+
+  await expect.poll(titleTabGroup, { timeout: 10000 }).toBe(null);
+  expect(page.isClosed()).toBe(false);
+});
+
+test('idle release closes tabs the session opened and keeps the user tab', async ({ browserWithExtension, startClient, server }) => {
+  server.setContent('/second.html', '<title>Second</title><body>Second page<body>', 'text/html');
+  const { page, client, titleTabGroup } = await connectIdleClient(browserWithExtension, startClient, server, 1500);
+  await client.callTool({ name: 'browser_tabs', arguments: { action: 'new', url: server.PREFIX + '/second.html' } });
+  const secondTab = page.context().pages().find(p => p.url().endsWith('/second.html'));
+  expect(secondTab).toBeTruthy();
+
+  await expect.poll(() => secondTab!.isClosed(), { timeout: 10000 }).toBe(true);
+  expect(await titleTabGroup()).toBe(null);
+  expect(page.isClosed()).toBe(false);
+});
+
+test('tool call after an idle release reconnects', async ({ browserWithExtension, startClient, server }) => {
+  const { navigateAndApprove, titleTabGroup } = await connectIdleClient(browserWithExtension, startClient, server, 1000);
+  await expect.poll(titleTabGroup, { timeout: 10000 }).toBe(null);
+
+  const result = await navigateAndApprove();
+  expect(result.isError).toBeFalsy();
+  await expect.poll(titleTabGroup).toMatch(/ #2$/);
+});
+
+test('busy client keeps its tab group past the idle window', async ({ browserWithExtension, startClient, server }) => {
+  const { client, titleTabGroup } = await connectIdleClient(browserWithExtension, startClient, server, 1500);
+  const group = await titleTabGroup();
+  expect(group).toMatch(/ #1$/);
+
+  // One call that outlasts the idle window, then calls spaced inside it.
+  await client.callTool({ name: 'browser_wait_for', arguments: { time: 2 } });
+  for (let i = 0; i < 3; i++) {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  }
+  expect(await titleTabGroup()).toBe(group);
 });
