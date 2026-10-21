@@ -59,6 +59,8 @@ export type DevLoginFixture = {
   staleFirst?: boolean,
   closeChannel?: boolean,
   replyOverride?: { origin?: string, kind?: 'email' | 'password', value?: unknown },
+  savedLogins?: { origin: string, fields: { email: string, password: string } }[],
+  silentOrigins?: string[],
 };
 
 export type StartClient = (options?: {
@@ -258,11 +260,19 @@ async function createTransport(mcpServerType: TestOptions['mcpServerType'], opti
   };
 }
 
-export function devLoginRequests(): { id: string, name: string, frameOrigin: string, elementKind: string }[] {
+function channelRequests(): any[] {
   const file = test.info().outputPath('devlogin-requests.jsonl');
   if (!fs.existsSync(file))
     return [];
   return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+}
+
+export function devLoginRequests(): { id: string, name: string, frameOrigin: string, elementKind: string }[] {
+  return channelRequests().filter(request => request.type === undefined);
+}
+
+export function savedLoginRequests(): { id: string, type: 'saved-login', origin: string }[] {
+  return channelRequests().filter(request => request.type === 'saved-login');
 }
 
 type Response = Awaited<ReturnType<Client['callTool']>>;

@@ -21,6 +21,8 @@ import debug from 'debug';
 import { renderModalStates } from './tab';
 import { scaleImageToFitMessage } from './screenshot';
 import { compactAriaSnapshot } from './compactSnapshot';
+import { wireOrigin } from './frameOrigin';
+import { secretsChannel } from './secretsChannel';
 
 import { outputDir as resolveOutputDir } from './context';
 
@@ -36,6 +38,8 @@ type ResolvedFile = {
   relativeName: string;
   printableLink: string;
 };
+
+type SavedLogin = { origin: string, email: string, password: string };
 
 type Section = {
   title: string;
@@ -306,11 +310,15 @@ export class Response {
     const tabSnapshot = this._context.currentTab() ? await this._context.currentTabOrDie().captureSnapshot(this._includeSnapshotRoot, this._includeSnapshotDepth, this._includeSnapshotBoxes, this._clientWorkspace, this._includeSnapshot !== 'none') : undefined;
     const tabHeaders = await Promise.all(this._context.tabs().map(tab => tab.headerSnapshot()));
     const tabListChanged = this._context.consumeTabListChanged();
+    const currentHeader = tabHeaders.find(h => h.current);
+    const savedLogin = currentHeader ? await this._savedLogin(currentHeader.url) : undefined;
     if (tabListChanged || tabHeaders.some(header => header.changed)) {
       if (tabHeaders.length !== 1)
         addSection('Open tabs', renderTabsMarkdown(tabHeaders));
       if (tabHeaders.length)
-        addSection('Page', renderTabMarkdown(tabHeaders.find(h => h.current) ?? tabHeaders[0]));
+        addSection('Page', renderTabMarkdown(currentHeader ?? tabHeaders[0], savedLogin));
+    } else if (savedLogin) {
+      addSection('Saved login', [renderSavedLogin(savedLogin)]);
     }
 
     // Handle modal states.
@@ -357,9 +365,18 @@ export class Response {
     }
     return sections;
   }
+
+  private async _savedLogin(url: string): Promise<SavedLogin | undefined> {
+    const origin = wireOrigin(url);
+    const channel = secretsChannel(this._context.config.secretsChannelFd);
+    if (!origin || !channel)
+      return undefined;
+    const fields = await channel.savedLogin(origin);
+    return fields ? { origin, ...fields } : undefined;
+  }
 }
 
-export function renderTabMarkdown(tab: TabHeader): string[] {
+export function renderTabMarkdown(tab: TabHeader, savedLogin?: SavedLogin): string[] {
   const lines = [`- Page URL: ${tab.url}`];
   if (tab.title)
     lines.push(`- Page Title: ${tab.title}`);
@@ -370,7 +387,13 @@ export function renderTabMarkdown(tab: TabHeader): string[] {
     lines.push(`- HTTP status: ${status.status}${status.statusText ? ' ' + status.statusText : ''}`);
   if (tab.console.errors || tab.console.warnings)
     lines.push(`- Console: ${tab.console.errors} errors, ${tab.console.warnings} warnings`);
+  if (savedLogin)
+    lines.push(renderSavedLogin(savedLogin));
   return lines;
+}
+
+function renderSavedLogin(savedLogin: SavedLogin): string {
+  return `- Saved login for ${savedLogin.origin}: fill with ${savedLogin.email} / ${savedLogin.password}`;
 }
 
 export function renderTabsMarkdown(tabs: TabHeader[]): string[] {

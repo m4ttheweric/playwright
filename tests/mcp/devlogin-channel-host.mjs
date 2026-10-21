@@ -43,6 +43,10 @@ const served = new Map();
 
 function answer(request) {
   fs.appendFileSync(fixture.requestLog, JSON.stringify(request) + '\n');
+  if (request.type === 'saved-login') {
+    answerSavedLogin(request);
+    return;
+  }
   // Entries sharing a name answer in turn, as a login updated between two fills would.
   const entries = fixture.logins.filter(l => l.name === request.name);
   const turn = served.get(request.name) ?? 0;
@@ -60,4 +64,14 @@ function answer(request) {
       channel.write(JSON.stringify({ ...reply, id: `stale-${request.id}`, value: 'WRONG-VALUE' }) + '\n');
     channel.write(JSON.stringify(reply) + '\n');
   }, fixture.delayMs ?? 0);
+}
+
+function answerSavedLogin(request) {
+  if (fixture.silentOrigins?.includes(request.origin))
+    return;
+  const saved = fixture.savedLogins?.find(s => s.origin === request.origin);
+  const reply = saved
+    ? { id: request.id, type: 'saved-login', origin: request.origin, fields: saved.fields }
+    : { id: request.id, type: 'saved-login', origin: request.origin, none: true };
+  channel.write(JSON.stringify(reply) + '\n');
 }
