@@ -121,6 +121,26 @@ test('a silent origin returns within the bound without the line', async ({ start
   expect(savedLoginRequests().map(r => r.origin)).toEqual([origin, origin]);
 });
 
+for (const [label, fields] of [
+  ['values instead of names', { email: EMAIL_VALUE, password: PASSWORD_VALUE }],
+  ['an empty name', { email: '', password: PASSWORD }],
+  ['swapped names', { email: PASSWORD, password: EMAIL }],
+  ['a name with whitespace', { email: 'devlogin:app dev:email', password: PASSWORD }],
+  ['a non-string name', { email: 42, password: PASSWORD }],
+] as const) {
+  test(`a malformed reply (${label}) shows no line`, async ({ startClient, server }) => {
+    const origin = new URL(server.PREFIX).origin;
+    const { client } = await startClient({ devLogins: saved(origin, { savedLogins: [{ origin, fields: fields as any }] }) });
+    server.setContent('/', PAGE, 'text/html');
+    const response = await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+    expect(response.isError).toBeFalsy();
+    expect(sections(response).has('Page')).toBe(true);
+    expect(textOf(response)).not.toContain('Saved login');
+    expect(textOf(response)).not.toContain(EMAIL_VALUE);
+    expect(savedLoginRequests().map(r => r.origin)).toEqual([origin]);
+  });
+}
+
 test('two tabs: the line follows the current tab', async ({ startClient, server }) => {
   const origin = new URL(server.PREFIX).origin;
   const { client } = await startClient({ devLogins: saved(origin) });

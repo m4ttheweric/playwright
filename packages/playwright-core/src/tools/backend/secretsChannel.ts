@@ -27,6 +27,8 @@ type SavedLoginReply = { id: string, type: 'saved-login', origin: string, fields
 
 const REPLY_TIMEOUT_MS = 10_000;
 const SAVED_LOGIN_TIMEOUT_MS = 1000;
+const SAVED_LOGIN_EMAIL = /^devlogin:[^\s:]+:email$/;
+const SAVED_LOGIN_PASSWORD = /^devlogin:[^\s:]+:password$/;
 
 type Pending = {
   matches: (reply: any) => boolean;
@@ -61,7 +63,7 @@ export class SecretsChannel {
       return undefined;
     const email = reply.fields?.email;
     const password = reply.fields?.password;
-    if (typeof email !== 'string' || !email || typeof password !== 'string' || !password)
+    if (typeof email !== 'string' || !SAVED_LOGIN_EMAIL.test(email) || typeof password !== 'string' || !SAVED_LOGIN_PASSWORD.test(password))
       return undefined;
     return { email, password };
   }

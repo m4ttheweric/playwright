@@ -307,11 +307,14 @@ export class Response {
     //
     // The tab SET is tracked separately from the tab headers, because a tab
     // that closes leaves no header behind to say so.
+    const lookupOrigin = wireOrigin(this._context.currentTab()?.page.url());
+    const savedLoginLookup = this._savedLogin(lookupOrigin);
     const tabSnapshot = this._context.currentTab() ? await this._context.currentTabOrDie().captureSnapshot(this._includeSnapshotRoot, this._includeSnapshotDepth, this._includeSnapshotBoxes, this._clientWorkspace, this._includeSnapshot !== 'none') : undefined;
     const tabHeaders = await Promise.all(this._context.tabs().map(tab => tab.headerSnapshot()));
     const tabListChanged = this._context.consumeTabListChanged();
     const currentHeader = tabHeaders.find(h => h.current);
-    const savedLogin = currentHeader ? await this._savedLogin(currentHeader.url) : undefined;
+    const currentOrigin = currentHeader ? wireOrigin(currentHeader.url) : undefined;
+    const savedLogin = currentOrigin === lookupOrigin ? await savedLoginLookup : await this._savedLogin(currentOrigin);
     if (tabListChanged || tabHeaders.some(header => header.changed)) {
       if (tabHeaders.length !== 1)
         addSection('Open tabs', renderTabsMarkdown(tabHeaders));
@@ -366,8 +369,7 @@ export class Response {
     return sections;
   }
 
-  private async _savedLogin(url: string): Promise<SavedLogin | undefined> {
-    const origin = wireOrigin(url);
+  private async _savedLogin(origin: string | undefined): Promise<SavedLogin | undefined> {
     const channel = secretsChannel(this._context.config.secretsChannelFd);
     if (!origin || !channel)
       return undefined;
