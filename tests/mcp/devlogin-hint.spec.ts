@@ -113,7 +113,7 @@ test('a silent origin returns within the bound without the line', async ({ start
   ]) {
     const started = Date.now();
     const response = await client.callTool(call);
-    expect(Date.now() - started).toBeLessThan(3000);
+    expect(Date.now() - started).toBeLessThan(2000);
     expect(response.isError).toBeFalsy();
     expect(textOf(response)).not.toContain('Saved login');
   }
@@ -166,6 +166,17 @@ test('no secrets channel: no line, no error', async ({ startClient, server }) =>
   const navigate = await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
   expect(navigate.isError).toBeFalsy();
   expect(sections(navigate).has('Page')).toBe(true);
+  const click = await client.callTool({ name: 'browser_click', arguments: { element: 'Sign in button', target: 'button' } });
+  expect(click.isError).toBeFalsy();
+  expect(textOf(navigate) + textOf(click)).not.toContain('Saved login');
+});
+
+test('a channel that cannot be opened: no line, no error', async ({ startClient, server }) => {
+  const { client } = await startClient({ args: ['--secrets-channel-fd=97'] });
+  server.setContent('/', PAGE, 'text/html');
+  const navigate = await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect(navigate.isError).toBeFalsy();
+  expect(sections(navigate).get('Page')).toContain(`- Page URL: ${server.PREFIX}/`);
   const click = await client.callTool({ name: 'browser_click', arguments: { element: 'Sign in button', target: 'button' } });
   expect(click.isError).toBeFalsy();
   expect(textOf(navigate) + textOf(click)).not.toContain('Saved login');

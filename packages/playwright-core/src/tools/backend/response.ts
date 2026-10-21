@@ -370,11 +370,15 @@ export class Response {
   }
 
   private async _savedLogin(origin: string | undefined): Promise<SavedLogin | undefined> {
-    const channel = secretsChannel(this._context.config.secretsChannelFd);
-    if (!origin || !channel)
+    try {
+      const channel = secretsChannel(this._context.config.secretsChannelFd);
+      if (!origin || !channel)
+        return undefined;
+      const fields = await channel.savedLogin(origin);
+      return fields ? { origin, ...fields } : undefined;
+    } catch {
       return undefined;
-    const fields = await channel.savedLogin(origin);
-    return fields ? { origin, ...fields } : undefined;
+    }
   }
 }
 
