@@ -160,6 +160,14 @@ export type Config = {
   saveVideo?: { width: number, height: number };
 
   /**
+   * Path to a JSON file whose `video` field (`{ width, height }` or null) is
+   * re-read before each tool call. A change starts or stops recording on the
+   * next call, into the `videos` subdirectory of the output directory, with no
+   * restart.
+   */
+  videoConfig?: string;
+
+  /**
    * Reuse the same browser context between all connected HTTP clients.
    */
   sharedBrowserContext?: boolean;

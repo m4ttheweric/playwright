@@ -20,6 +20,7 @@ import path from 'path';
 
 import debug from 'debug';
 import { escapeWithQuotes } from '@isomorphic/stringUtils';
+import { ManualPromise } from '@isomorphic/manualPromise';
 import { disposeAll } from '@isomorphic/disposable';
 import { eventsHelper } from '@utils/eventsHelper';
 import { isPathInside, isSystemDirectory, isWritable } from '@utils/fileUtils';
@@ -52,6 +53,9 @@ export type ContextConfig = {
   saveSession?: boolean;
   saveTrace?: boolean;
   saveVideo?: { width: number, height: number };
+  videoConfig?: string;
+  // Set by the caller for the extension relay, the only mode where Chrome swaps a tab's target under a navigation.
+  recoverTargetSwaps?: boolean;
   // Not CLI-settable: threaded in by the caller that constructs BrowserBackend
   // (mcp/program.ts and friends) from data those callers already have --
   // mcp/program.ts's `serverVersion` and mcp/protocol.ts's `VERSION` -- and
@@ -103,7 +107,8 @@ export type FilenameTemplate = {
   date?: Date;
 };
 
-type VideoParams = { size?: { width: number; height: number } };
+type VideoSize = { width: number; height: number };
+type VideoParams = { size?: VideoSize };
 
 // Per-action telemetry collected while a tool's own callback runs (network
 // activity, waits). A take-once accessor: set during the action by
@@ -162,6 +167,22 @@ export class Context {
     fileNames: string[];
     fileName: string;
   } | undefined;
+  private _configVideo: {
+    size: VideoSize;
+    pages: Set<playwrightTypes.Page>;
+    starts: Promise<unknown>[];
+    stopping: boolean;
+  } | undefined;
+  private _configVideoFiles = 0;
+  private _videoSync: Promise<void> = Promise.resolve();
+  private _closingOnPurpose = new WeakSet<playwrightTypes.Page>();
+  private _targetIds = new WeakMap<playwrightTypes.Page, string>();
+  private _swappedOut: SwappedOutTab[] = [];
+  private _replacements = new WeakMap<Tab, ManualPromise<Tab | undefined>>();
+  private _replacedBy = new WeakMap<Tab, Tab>();
+  private _openingTabs = 0;
+  private _tabSelections = 0;
+  private _watchingDisconnect = false;
   private _tracing = false;
   private _disposables: Disposable[] = [];
 
@@ -216,6 +237,9 @@ export class Context {
     this._tabs.length = 0;
     this._currentTab = undefined;
     await this.stopVideoRecording();
+    // A sync still in flight could otherwise start a recording after this stop.
+    await this._videoSync;
+    await this._stopConfigVideo();
   }
 
   drainPendingUnhandledRejections(): unknown[] {
@@ -265,8 +289,15 @@ export class Context {
 
   async newTab(): Promise<Tab> {
     const browserContext = await this.ensureBrowserContext();
-    const page = await browserContext.newPage();
+    this._openingTabs++;
+    let page: playwrightTypes.Page;
+    try {
+      page = await browserContext.newPage();
+    } finally {
+      this._openingTabs--;
+    }
     this._currentTab = this._tabs.find(t => t.page === page)!;
+    this._tabSelections++;
     return this._currentTab;
   }
 
@@ -276,6 +307,7 @@ export class Context {
       throw new Error(`Tab ${index} not found`);
     await tab.page.bringToFront();
     this._currentTab = tab;
+    this._tabSelections++;
     return tab;
   }
 
@@ -283,6 +315,7 @@ export class Context {
     await this.ensureBrowserContext();
     const crashed = this._currentTab?.crashed;
     if (crashed) {
+      this._closingOnPurpose.add(this._currentTab!.page);
       await this._currentTab!.page.close().catch(() => {});
       this._currentTab = undefined;
     }
@@ -299,6 +332,7 @@ export class Context {
     if (!tab)
       throw new Error(`Tab ${index} not found`);
     const url = tab.page.url();
+    this._closingOnPurpose.add(tab.page);
     await tab.page.close();
     return url;
   }
@@ -315,6 +349,8 @@ export class Context {
   async startVideoRecording(fileName: string, params: VideoParams) {
     if (this._video)
       throw new Error('Video recording has already been started.');
+    if (this._configVideo)
+      throw new Error(`Video recording has already been started by the video setting in ${this.config.videoConfig}.`);
     this._video = { params, fileName, fileNames: [] };
     const browserContext = await this.ensureBrowserContext();
     for (const page of browserContext.pages())
@@ -331,12 +367,115 @@ export class Context {
     return [...video.fileNames];
   }
 
+  // The dispatcher calls this before every tool call. Calls can overlap, so syncs run one at a time.
+  syncVideoConfig(): Promise<void> {
+    const sync = this._videoSync.then(() => this._syncVideoConfig());
+    this._videoSync = sync.catch(() => {});
+    return sync;
+  }
+
+  private async _syncVideoConfig() {
+    if (!this.config.videoConfig)
+      return;
+    const setting = await readVideoSetting(this.config.videoConfig);
+    if (setting === 'unreadable')
+      return;
+    const current = this._configVideo?.size;
+    if (setting?.width === current?.width && setting?.height === current?.height)
+      return;
+    await this._stopConfigVideo();
+    // A stop that timed out leaves the old recording tracked; never start a second one over it.
+    if (setting && !this._configVideo)
+      await this._startConfigVideo(setting);
+  }
+
+  private async _startConfigVideo(size: VideoSize) {
+    if (this._video)
+      return;
+    // Starting a recording reads the page back, so a filled saved login defers it to a later call.
+    this.beginReadbackCall();
+    try {
+      if (await this.isReadbackLocked())
+        return;
+      this._configVideo = { size, pages: new Set(), starts: [], stopping: false };
+      const browserContext = await this.ensureBrowserContext();
+      for (const page of browserContext.pages())
+        await this._startConfigPageVideo(page).catch(() => {});
+    } finally {
+      this.endReadbackCall();
+    }
+  }
+
+  private async _startConfigPageVideo(page: playwrightTypes.Page) {
+    const video = this._configVideo;
+    if (!video || video.stopping || video.pages.has(page))
+      return;
+    video.pages.add(page);
+    const start = (async () => {
+      const dir = path.resolve(outputDir(this.options), 'videos');
+      await fs.promises.mkdir(dir, { recursive: true });
+      // A stop that began during the await would miss this screencast and leave it recording untracked.
+      if (this._configVideo !== video || video.stopping)
+        return;
+      const file = path.join(dir, `video-${new Date().toISOString().replace(/[:.]/g, '-')}-${++this._configVideoFiles}.webm`);
+      // A start that never answers stays in video.pages, so the next stop still tries it.
+      await settleWithin(page.screencast.start({ path: file, size: video.size }), VIDEO_STEP_TIMEOUT_MS);
+      const recording = recordingArtifact(page);
+      if (recording)
+        page.once('close', () => recording.saveAs(file).catch(() => {}));
+    })();
+    video.starts.push(start);
+    await start;
+  }
+
+  // Stays reported by activeRecordings until every screencast has stopped. A stop that never answers
+  // keeps its page tracked, so saved logins stay refused and the next sync tries the stop again.
+  private async _stopConfigVideo() {
+    const video = this._configVideo;
+    if (!video)
+      return;
+    video.stopping = true;
+    await Promise.allSettled(video.starts);
+    video.starts = [];
+    const stuck = new Set<playwrightTypes.Page>();
+    for (const page of video.pages) {
+      if (await settleWithin(page.screencast.stop(), VIDEO_STEP_TIMEOUT_MS) === 'timeout')
+        stuck.add(page);
+    }
+    if (stuck.size) {
+      video.pages = stuck;
+      return;
+    }
+    this._configVideo = undefined;
+  }
+
   setTracing(tracing: boolean) {
     this._tracing = tracing;
   }
 
-  isRecording(): boolean {
-    return !!this.config.saveVideo || !!this._video || this._tracing || this._tabs.some(tab => !!tab.page.video()) || isTracingOrRecordingHar(this._rawBrowserContext);
+  // Each entry names one active recording and how to stop it, for the saved-login refusal.
+  activeRecordings(): string[] {
+    const recordings: string[] = [];
+    if (this.config.saveVideo)
+      recordings.push('video is on: --save-video was set at launch, restart the session without it');
+    else if (this._tabs.some(tab => !!tab.page.video()))
+      recordings.push('video is on: recordVideo is set in the browser context options, restart the session without it');
+    if (this._configVideo)
+      recordings.push(`video is on: video is set in ${this.config.videoConfig}, run fast-browser configure --video off and it stops on the next call`);
+    if (this._video)
+      recordings.push('video is on: browser_start_video is recording, stop it with browser_stop_video');
+    const tracing = tracingAndHarState(this._rawBrowserContext);
+    if (!tracing) {
+      recordings.push('recording state is unknown, restart the session');
+      return recordings;
+    }
+    if (this._tracing)
+      recordings.push('trace is on: browser_start_tracing is recording, stop it with browser_stop_tracing');
+    else if (tracing.tracing)
+      recordings.push('trace is on: a Playwright trace was started from code, stop it with context.tracing.stop()');
+    if (tracing.har)
+      recordings.push('HAR is on: a HAR is recording, restart the session without recordHar');
+    return recordings;
   }
 
   private async _startPageVideo(page: playwrightTypes.Page) {
@@ -355,10 +494,24 @@ export class Context {
 
   private _onPageCreated(page: playwrightTypes.Page) {
     const tab = new Tab(this, page, tab => this._onPageClosed(tab));
-    this._tabs.push(tab);
+    const targetId = pageTargetId(page);
+    if (targetId)
+      this._targetIds.set(page, targetId);
+    const swappedOut = this._openingTabs ? undefined : this._claimSwappedOut(page, targetId);
+    if (swappedOut) {
+      this._tabs.splice(Math.min(swappedOut.index, this._tabs.length), 0, tab);
+      // A tab the agent picked since the close stays current.
+      if (swappedOut.wasCurrent && this._tabSelections === swappedOut.tabSelections)
+        this._currentTab = tab;
+      this._replacedBy.set(swappedOut.tab, tab);
+      this._replacements.get(swappedOut.tab)?.resolve(tab);
+    } else {
+      this._tabs.push(tab);
+    }
     if (!this._currentTab)
       this._currentTab = tab;
     this._startPageVideo(page).catch(() => {});
+    this._startConfigPageVideo(page).catch(() => {});
   }
 
   private _onPageClosed(tab: Tab) {
@@ -366,9 +519,79 @@ export class Context {
     if (index === -1)
       return;
     this._tabs.splice(index, 1);
-
-    if (this._currentTab === tab)
+    const wasCurrent = this._currentTab === tab;
+    if (wasCurrent)
       this._currentTab = this._tabs[Math.min(index, this._tabs.length - 1)];
+    this._configVideo?.pages.delete(tab.page);
+    if (this.config.recoverTargetSwaps && !this._closingOnPurpose.has(tab.page) && this._rawBrowserContext.browser()?.isConnected() !== false)
+      this._rememberSwappedOut({ tab, index, wasCurrent, tabSelections: this._tabSelections, targetId: this._targetIds.get(tab.page), closedAt: Date.now() });
+  }
+
+  // The page that took this tab's place after a target swap, if one did.
+  replacedBy(tab: Tab | undefined): Tab | undefined {
+    return tab ? this._replacedBy.get(tab) : undefined;
+  }
+
+  // Under the extension relay a cross-site navigation can make Chrome drop a tab's debugger target and attach a
+  // replacement: Playwright sees the page close and a new one open. The replacement takes the closed tab's place.
+  private _rememberSwappedOut(swappedOut: SwappedOutTab) {
+    this._pruneSwappedOut();
+    const replacement = new ManualPromise<Tab | undefined>();
+    this._replacements.set(swappedOut.tab, replacement);
+    this._swappedOut.push(swappedOut);
+    if (!this._watchingDisconnect) {
+      this._watchingDisconnect = true;
+      const giveUp = () => this._abandonSwappedOut();
+      this._rawBrowserContext.once('close', giveUp);
+      this._rawBrowserContext.browser()?.once('disconnected', giveUp);
+    }
+  }
+
+  private _claimSwappedOut(page: playwrightTypes.Page, targetId: string | undefined): SwappedOutTab | undefined {
+    this._pruneSwappedOut();
+    if (!this._swappedOut.length)
+      return undefined;
+    let match = targetId ? this._swappedOut.find(s => s.targetId === targetId) : undefined;
+    // Chrome can mint a new target id for the replacement; a lone closed tab and an opener-less page are the pair.
+    if (!match && this._swappedOut.length === 1 && !pageHasOpener(page))
+      match = this._swappedOut[0];
+    if (match)
+      this._swappedOut.splice(this._swappedOut.indexOf(match), 1);
+    return match;
+  }
+
+  private _pruneSwappedOut() {
+    const now = Date.now();
+    const expired = this._swappedOut.filter(s => now - s.closedAt > SWAP_WINDOW_MS);
+    this._swappedOut = this._swappedOut.filter(s => !expired.includes(s));
+    for (const swappedOut of expired)
+      this._replacements.get(swappedOut.tab)?.resolve(undefined);
+  }
+
+  private _abandonSwappedOut() {
+    const swappedOut = this._swappedOut;
+    this._swappedOut = [];
+    for (const entry of swappedOut)
+      this._replacements.get(entry.tab)?.resolve(undefined);
+  }
+
+  // Resolves to the page that replaced the tab, or undefined when the tab was not swapped out or nothing replaced it.
+  async replacementFor(tab: Tab | undefined, timeoutMs: number, options: { awaitCloseMs?: number } = {}): Promise<Tab | undefined> {
+    if (!tab)
+      return undefined;
+    // A navigation can reject on the frame detaching before the page's close event arrives.
+    if (options.awaitCloseMs && !this._replacements.has(tab) && !tab.page.isClosed())
+      await tab.page.waitForEvent('close', { timeout: options.awaitCloseMs }).catch(() => {});
+    const replacement = this._replacements.get(tab);
+    if (!replacement)
+      return undefined;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<undefined>(resolve => timer = setTimeout(() => resolve(undefined), timeoutMs));
+    try {
+      return await Promise.race([replacement, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   routes(): RouteEntry[] {
@@ -610,13 +833,72 @@ export class Context {
 
 type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
 
-// Covers a HAR from the context options or startHar, and tracing started by page code. Unknown state counts as recording.
-function isTracingOrRecordingHar(browserContext: playwrightTypes.BrowserContext): boolean {
+type SwappedOutTab = { tab: Tab, index: number, wasCurrent: boolean, tabSelections: number, targetId: string | undefined, closedAt: number };
+
+// Matches the extension's watch on an involuntarily detached tab (kDetachedTabWatchMs).
+const SWAP_WINDOW_MS = 10_000;
+
+// Throws once the page is closed, so read it while the page is open.
+function serverPage(page: playwrightTypes.Page): any {
+  try {
+    // eslint-disable-next-line no-restricted-syntax -- target identity is only kept on the in-process server page.
+    return (page as any)._connection?.toImpl?.(page);
+  } catch {
+    return undefined;
+  }
+}
+
+function pageTargetId(page: playwrightTypes.Page): string | undefined {
+  const targetId = serverPage(page)?.delegate?._targetId;
+  return typeof targetId === 'string' ? targetId : undefined;
+}
+
+function pageHasOpener(page: playwrightTypes.Page): boolean {
+  return !!serverPage(page)?.opener?.();
+}
+
+// Bounds one screencast start or stop, so a page that never answers cannot hold up every later tool call.
+const VIDEO_STEP_TIMEOUT_MS = 10_000;
+
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<'settled' | 'timeout'> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>(resolve => timer = setTimeout(() => resolve('timeout'), timeoutMs));
+  try {
+    return await Promise.race([promise.then(() => 'settled' as const, () => 'settled' as const), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Screencast.stop() throws on a closed page before it saves, but the server finishes the recording when the page
+// closes, so the artifact captured right after this start can still be saved.
+function recordingArtifact(page: playwrightTypes.Page): { saveAs(file: string): Promise<void> } | undefined {
+  // eslint-disable-next-line no-restricted-syntax -- the recording is only reachable through the client's private artifact.
+  const artifact = (page.screencast as any)._artifact;
+  return typeof artifact?.saveAs === 'function' ? artifact : undefined;
+}
+
+// A missing file means video off. A file caught mid-write keeps the current state rather than splitting the recording.
+async function readVideoSetting(file: string): Promise<VideoSize | null | 'unreadable'> {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+  } catch (error: any) {
+    return error?.code === 'ENOENT' ? null : 'unreadable';
+  }
+  const video = parsed?.video;
+  if (Number.isInteger(video?.width) && Number.isInteger(video?.height) && video.width > 0 && video.height > 0)
+    return { width: video.width, height: video.height };
+  return null;
+}
+
+// Covers a HAR from the context options or startHar, and tracing started by page code. Undefined means the state is unreadable.
+function tracingAndHarState(browserContext: playwrightTypes.BrowserContext): { tracing: boolean, har: boolean } | undefined {
   // eslint-disable-next-line no-restricted-syntax -- HAR and tracing state are only kept on the client object's private fields.
   const tracing = browserContext.tracing as any;
   if (typeof tracing?._isTracing !== 'boolean' || !(tracing._harRecorders instanceof Map))
-    return true;
-  return tracing._isTracing || tracing._harRecorders.size > 0;
+    return undefined;
+  return { tracing: tracing._isTracing, har: tracing._harRecorders.size > 0 };
 }
 
 // A blocked page (an open dialog) never answers the probe; an unanswered probe counts as connected so the lock fails closed.

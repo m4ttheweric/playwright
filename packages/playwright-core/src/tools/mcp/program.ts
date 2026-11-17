@@ -70,6 +70,7 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
       .option('--save-session', 'Whether to save the Playwright MCP session into the output directory.')
       .option('--save-trace', 'Record every tool call to a local JSONL trace')
       .option('--save-video <size>', 'record a video of each page into the "videos" subdirectory of the output directory, specify size as "800x600". Applies to browsers this server launches and to tabs attached through the extension relay or an isolated cdp connection; the cli daemon does not record.', resolutionParser.bind(null, '--save-video'))
+      .option('--video-config <path>', 'path to a JSON file whose "video" field ({"width", "height"} or null) is re-read before each tool call. A change starts or stops recording on the next call, into the "videos" subdirectory of the output directory, with no restart.')
       .option('--secrets <path>', 'path to a file containing secrets in the dotenv format', dotenvFileLoader)
       .option('--secrets-channel-fd <fd>', 'file descriptor of a socket that answers saved-login requests for "devlogin:" values', numberParser)
       .option('--shared-browser-context', 'reuse the same browser context between all connected HTTP clients.')
@@ -139,7 +140,9 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
             // (backend/ cannot import mcp/protocol.ts -- see DEPS.list) so
             // TraceLog.create can report them in meta.json without a hardcoded
             // protocolVersion literal living in the backend.
-            return new BrowserBackend({ ...config, productVersion: serverVersion, protocolVersion: PROTOCOL_VERSION }, browserContext, tools);
+            // PWTEST_MCP_TARGET_SWAPS lets tests stand in for the relay's swap over --cdp-endpoint.
+            const recoverTargetSwaps = !!config.extension || !!process.env.PWTEST_MCP_TARGET_SWAPS;
+            return new BrowserBackend({ ...config, productVersion: serverVersion, protocolVersion: PROTOCOL_VERSION, recoverTargetSwaps }, browserContext, tools);
           },
           disposed: async backend => {
             clientCount--;

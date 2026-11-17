@@ -40,7 +40,7 @@ export async function createConnection(userConfig: Config = {}, contextGetter?: 
         ? new SimpleBrowser(await contextGetter())
         : (await createBrowserWithInfo(config, clientInfo, {})).browser;
       const context = config.browser.isolated ? await browser.newContext({ ...config.browser.contextOptions, ...videoRecordingOptions(config, clientInfo) }) : browser.contexts()[0];
-      return new BrowserBackend({ ...config, productVersion: packageJSON.version, protocolVersion: PROTOCOL_VERSION }, context, tools);
+      return new BrowserBackend({ ...config, productVersion: packageJSON.version, protocolVersion: PROTOCOL_VERSION, recoverTargetSwaps: !!config.extension }, context, tools);
     },
     disposed: async () => { }
   };

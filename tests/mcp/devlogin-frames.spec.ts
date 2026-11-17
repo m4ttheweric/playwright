@@ -285,3 +285,81 @@ test('a fill during a browser_start_tracing trace is refused as recording', asyn
   expect(devLoginRequests()).toEqual([]);
   expect(await typedLines(client)).toEqual([]);
 });
+
+async function refusalFor(client: Client) {
+  const response = await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } });
+  expect(response.isError).toBe(true);
+  return JSON.stringify(response.content);
+}
+
+test('a refusal under --save-video names the launch flag and how to clear it', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    args: ['--save-video=800x600', `--output-dir=${test.info().outputPath('output')}`],
+    devLogins: { logins: login(origin) },
+  });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  const refusal = await refusalFor(client);
+  expect(refusal).toContain('refused: recording');
+  expect(refusal).toContain('video is on: --save-video was set at launch, restart the session without it');
+});
+
+test('a refusal during browser_start_video names the tool that stops it', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    args: ['--caps=devtools', `--output-dir=${test.info().outputPath('output')}`],
+    devLogins: { logins: login(origin) },
+  });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  await client.callTool({ name: 'browser_start_video', arguments: {} });
+  expect(await refusalFor(client)).toContain('video is on: browser_start_video is recording, stop it with browser_stop_video');
+});
+
+test('a refusal during browser_start_tracing names trace and the tool that stops it', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    args: ['--caps=devtools', `--output-dir=${test.info().outputPath('output')}`],
+    devLogins: { logins: login(origin) },
+  });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  await client.callTool({ name: 'browser_start_tracing', arguments: {} });
+  const refusal = await refusalFor(client);
+  expect(refusal).toContain('trace is on: browser_start_tracing is recording, stop it with browser_stop_tracing');
+  expect(refusal).not.toContain('video is on');
+});
+
+test('a refusal during a trace started from code names context.tracing.stop()', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({ devLogins: { logins: login(origin) } });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async page => { await page.context().tracing.start(); }` } });
+  expect(await refusalFor(client)).toContain('trace is on: a Playwright trace was started from code, stop it with context.tracing.stop()');
+});
+
+test('a refusal under recordHar names the HAR', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    config: { browser: { contextOptions: { recordHar: { path: test.info().outputPath('network.har') } } } },
+    devLogins: { logins: login(origin) },
+  });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  expect(await refusalFor(client)).toContain('HAR is on: a HAR is recording, restart the session without recordHar');
+});
+
+test('--save-trace and --save-session do not block a saved login', async ({ startClient, server }) => {
+  const origin = new URL(server.PREFIX).origin;
+  const { client } = await startClient({
+    args: ['--save-trace', '--save-session', `--output-dir=${test.info().outputPath('output')}`],
+    devLogins: { logins: login(origin) },
+  });
+  server.setContent('/', INPUT, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  const response = await client.callTool({ name: 'browser_type', arguments: { element: 'pw', target: '#pw', text: PASSWORD } });
+  expect(response.isError).toBeFalsy();
+  expect(await typedLines(client)).toEqual([`typed:<secret>${PASSWORD}</secret>`]);
+});

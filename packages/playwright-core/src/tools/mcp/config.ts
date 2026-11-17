@@ -72,6 +72,7 @@ export type CLIOptions = {
   saveSession?: boolean;
   saveTrace?: boolean;
   saveVideo?: ViewportSize;
+  videoConfig?: string;
   secrets?: Record<string, string>;
   secretsChannelFd?: number;
   sharedBrowserContext?: boolean;
@@ -398,6 +399,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
     saveSession: cliOptions.saveSession,
     saveTrace: cliOptions.saveTrace,
     saveVideo: cliOptions.saveVideo,
+    videoConfig: cliOptions.videoConfig,
     secrets: cliOptions.secrets,
     secretsChannelFd: cliOptions.secretsChannelFd,
     sharedBrowserContext: cliOptions.sharedBrowserContext,
@@ -465,6 +467,7 @@ export function configFromEnv(env?: NodeJS.ProcessEnv): Config & { configFile?: 
   options.proxyServer = envToString(e.PLAYWRIGHT_MCP_PROXY_SERVER);
   options.remoteHeader = headerParser(envToString(e.PLAYWRIGHT_MCP_REMOTE_HEADERS));
   options.saveTrace = envToBoolean(e.PLAYWRIGHT_MCP_SAVE_TRACE);
+  options.videoConfig = envToString(e.PLAYWRIGHT_MCP_VIDEO_CONFIG);
   options.secrets = dotenvFileLoader(e.PLAYWRIGHT_MCP_SECRETS_FILE);
   options.storageState = envToString(e.PLAYWRIGHT_MCP_STORAGE_STATE);
   options.testIdAttribute = envToString(e.PLAYWRIGHT_MCP_TEST_ID_ATTRIBUTE);
