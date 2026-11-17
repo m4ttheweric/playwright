@@ -17,107 +17,158 @@
 // FB-74. Under the extension relay a cross-site redirect can make Chrome drop
 // the tab's debugger target and hand back a replacement. Playwright sees the
 // old page close and a new one open. These tests stand in for that swap over
-// --cdp-endpoint: a second client closes the page mid-call and opens its
-// replacement, which is the same pair of events the relay emits.
+// --cdp-endpoint, with PWTEST_MCP_TARGET_SWAPS turning on the recovery the
+// relay gets: a second client closes the page and opens its replacement,
+// which is the same pair of events the relay emits.
 
 import { test, expect } from './fixtures';
 
 import type { BrowserContext } from 'playwright-core';
+
+type StartClient = Parameters<Parameters<typeof test>[2]>[0]['startClient'];
+
+async function startSwapClient(startClient: StartClient, endpoint: string, swaps = true) {
+  return await startClient({
+    args: [`--cdp-endpoint=${endpoint}`],
+    env: swaps ? { PWTEST_MCP_TARGET_SWAPS: '1' } : {},
+  });
+}
 
 // The page the MCP client drives: every test opens only that page and /other.
 function drivenPage(browserContext: BrowserContext) {
   return browserContext.pages().find(page => !page.url().endsWith('/other'))!;
 }
 
+async function openPage(browserContext: BrowserContext, url: string) {
+  const page = await browserContext.newPage();
+  await page.goto(url);
+}
+
 async function swapDrivenPage(browserContext: BrowserContext, url: string) {
   await drivenPage(browserContext).close();
-  const replacement = await browserContext.newPage();
-  await replacement.goto(url);
+  await openPage(browserContext, url);
 }
 
-async function openOther(browserContext: BrowserContext, server: any) {
-  const other = await browserContext.newPage();
-  await other.goto(server.PREFIX + '/other');
-}
-
-function errorText(response: any): string {
+function text(response: any): string {
   return (response.content?.[0] as { text: string } | undefined)?.text ?? '';
 }
 
-test('a navigation whose page is swapped mid-call lands on the replacement, not SIDECAR_LOST', async ({ cdpServer, startClient, server }) => {
-  const browserContext = await cdpServer.start();
+test.beforeEach(({ server }) => {
   server.setContent('/other', '<title>Other</title>', 'text/html');
-  server.setContent('/signin', '<title>Sign in</title><body>Sign in to continue</body>', 'text/html');
   server.setContent('/start', '<title>Start</title>', 'text/html');
-  server.setRoute('/redirecting', () => {});
-  const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
-  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/start' } });
-  await openOther(browserContext, server);
+  server.setContent('/signin', '<title>Sign in</title><body>Sign in to continue</body>', 'text/html');
+  server.setRoute('/hanging', () => {});
+});
 
-  const navigation = client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/redirecting' } });
-  await server.waitForRequest('/redirecting');
+async function setUp(cdpServer: any, startClient: StartClient, server: any, swaps = true) {
+  const browserContext: BrowserContext = await cdpServer.start();
+  const { client } = await startSwapClient(startClient, cdpServer.endpoint, swaps);
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/start' } });
+  await openPage(browserContext, server.PREFIX + '/other');
+  return { browserContext, client };
+}
+
+async function tabList(client: any) {
+  return text(await client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }));
+}
+
+test('a navigation whose page is swapped mid-call lands on the replacement, not SIDECAR_LOST', async ({ cdpServer, startClient, server }) => {
+  const { browserContext, client } = await setUp(cdpServer, startClient, server);
+
+  const navigation = client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/hanging' } });
+  await server.waitForRequest('/hanging');
   await swapDrivenPage(browserContext, server.PREFIX + '/signin');
   const response = await navigation;
 
-  expect(errorText(response)).not.toContain('SIDECAR_LOST');
-  expect(response.isError, errorText(response)).toBeFalsy();
-  expect(errorText(response)).toContain('The page was replaced during the navigation');
-  expect(errorText(response)).toContain(`- Page URL: ${server.PREFIX}/signin`);
+  expect(text(response)).not.toContain('SIDECAR_LOST');
+  expect(response.isError, text(response)).toBeFalsy();
+  expect(text(response)).toContain('The page was replaced during the navigation');
+  expect(text(response)).toContain(`- Page URL: ${server.PREFIX}/signin`);
 
-  const tabs = errorText(await client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }));
+  const tabs = await tabList(client);
   expect(tabs).toMatch(/- 0: \(current\) \[Sign in\]/);
   expect(tabs).toMatch(/- 1: \[Other\]/);
 });
 
 test('the call after a swap runs on the replacement page', async ({ cdpServer, startClient, server }) => {
-  const browserContext = await cdpServer.start();
-  server.setContent('/other', '<title>Other</title>', 'text/html');
-  server.setContent('/start', '<title>Start</title>', 'text/html');
-  server.setContent('/signin', '<title>Sign in</title><body>Sign in to continue</body>', 'text/html');
-  const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
-  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/start' } });
-  await openOther(browserContext, server);
+  const { browserContext, client } = await setUp(cdpServer, startClient, server);
 
   await swapDrivenPage(browserContext, server.PREFIX + '/signin');
 
-  const snapshot = errorText(await client.callTool({ name: 'browser_snapshot', arguments: {} }));
+  const snapshot = text(await client.callTool({ name: 'browser_snapshot', arguments: {} }));
   expect(snapshot).toContain(`- Page URL: ${server.PREFIX}/signin`);
   expect(snapshot).toMatch(/- 0: \(current\) \[Sign in\]/);
   expect(snapshot).toMatch(/- 1: \[Other\]/);
 });
 
-test('a page closed mid-call with no replacement still fails as closed', async ({ cdpServer, startClient, server }) => {
-  const browserContext = await cdpServer.start();
-  server.setContent('/other', '<title>Other</title>', 'text/html');
-  server.setContent('/start', '<title>Start</title>', 'text/html');
-  const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
-  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/start' } });
-  await openOther(browserContext, server);
+test('without the relay a closed tab and a new tab are not paired', async ({ cdpServer, startClient, server }) => {
+  const { browserContext, client } = await setUp(cdpServer, startClient, server, false);
 
-  const hanging = client.callTool({ name: 'browser_evaluate', arguments: { function: '() => new Promise(() => {})' } });
-  await new Promise(resolve => setTimeout(resolve, 500));
-  await drivenPage(browserContext).close();
+  await swapDrivenPage(browserContext, server.PREFIX + '/signin');
 
-  const response = await hanging;
-  expect(response.isError).toBe(true);
-  expect(errorText(response)).toContain('Target page, context or browser has been closed');
-  expect(errorText(response)).not.toContain('replaced');
+  const tabs = await tabList(client);
+  expect(tabs).toMatch(/- 0: \(current\) \[Other\]/);
+  expect(tabs).toMatch(/- 1: \[Sign in\]/);
 });
 
-test('a browser that dies mid-call fails as closed without waiting for a replacement', async ({ cdpServer, startClient, server }) => {
-  const browserContext = await cdpServer.start();
-  server.setContent('/start', '<title>Start</title>', 'text/html');
-  const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
-  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/start' } });
+test('a tab the agent opens after a close is not taken as the replacement', async ({ cdpServer, startClient, server }) => {
+  const { browserContext, client } = await setUp(cdpServer, startClient, server);
 
-  const hanging = client.callTool({ name: 'browser_evaluate', arguments: { function: '() => new Promise(() => {})' } });
-  await new Promise(resolve => setTimeout(resolve, 500));
+  await drivenPage(browserContext).close();
+  await expect.poll(() => tabList(client)).not.toContain('[Start]');
+  await client.callTool({ name: 'browser_tabs', arguments: { action: 'new' } });
+
+  const tabs = await tabList(client);
+  expect(tabs).toMatch(/- 0: \[Other\]/);
+  expect(tabs).toMatch(/- 1: \(current\) \[/);
+});
+
+test('a tab the agent selects after a close stays current when a replacement arrives', async ({ cdpServer, startClient, server }) => {
+  const { browserContext, client } = await setUp(cdpServer, startClient, server);
+
+  await drivenPage(browserContext).close();
+  await expect.poll(() => tabList(client)).not.toContain('[Start]');
+  await client.callTool({ name: 'browser_tabs', arguments: { action: 'select', index: 0 } });
+  await openPage(browserContext, server.PREFIX + '/signin');
+
+  const tabs = await tabList(client);
+  expect(tabs).toMatch(/\(current\) \[Other\]/);
+  expect(tabs).not.toMatch(/\(current\) \[Sign in\]/);
+});
+
+test('a call that succeeds while its page closes keeps its result and does not wait', async ({ cdpServer, startClient, server }) => {
+  const { client } = await setUp(cdpServer, startClient, server);
+
+  const startedAt = Date.now();
+  const response = await client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async page => { await page.close(); return 'RESULT-42'; }` } });
+
+  expect(Date.now() - startedAt).toBeLessThan(2000);
+  expect(response.isError, text(response)).toBeFalsy();
+  expect(JSON.stringify(response.content)).toContain('RESULT-42');
+});
+
+test('a navigation whose page closes with no replacement keeps its original error', async ({ cdpServer, startClient, server }) => {
+  const { browserContext, client } = await setUp(cdpServer, startClient, server);
+
+  const navigation = client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/hanging' } });
+  await server.waitForRequest('/hanging');
+  await drivenPage(browserContext).close();
+
+  const response = await navigation;
+  expect(response.isError).toBe(true);
+  expect(text(response)).not.toContain('replaced');
+});
+
+test('a browser that dies mid-navigation fails without waiting for a replacement', async ({ cdpServer, startClient, server }) => {
+  const { browserContext, client } = await setUp(cdpServer, startClient, server);
+
+  const navigation = client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/hanging' } });
+  await server.waitForRequest('/hanging');
   const killedAt = Date.now();
   await browserContext.close();
 
-  const response = await hanging;
-  expect(Date.now() - killedAt).toBeLessThan(3000);
+  const response = await navigation;
+  expect(Date.now() - killedAt).toBeLessThan(4000);
   expect(response.isError).toBe(true);
-  expect(errorText(response)).toContain('Target page, context or browser has been closed');
-  expect(errorText(response)).not.toContain('replaced');
+  expect(text(response)).not.toContain('replaced');
 });

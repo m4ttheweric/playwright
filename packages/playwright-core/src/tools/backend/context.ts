@@ -54,6 +54,8 @@ export type ContextConfig = {
   saveTrace?: boolean;
   saveVideo?: { width: number, height: number };
   videoConfig?: string;
+  // Set by the caller for the extension relay, the only mode where Chrome swaps a tab's target under a navigation.
+  recoverTargetSwaps?: boolean;
   // Not CLI-settable: threaded in by the caller that constructs BrowserBackend
   // (mcp/program.ts and friends) from data those callers already have --
   // mcp/program.ts's `serverVersion` and mcp/protocol.ts's `VERSION` -- and
@@ -168,12 +170,18 @@ export class Context {
   private _configVideo: {
     size: VideoSize;
     pages: Set<playwrightTypes.Page>;
+    starts: Promise<void>[];
+    stopping: boolean;
   } | undefined;
   private _configVideoFiles = 0;
+  private _videoSync: Promise<void> = Promise.resolve();
   private _closingOnPurpose = new WeakSet<playwrightTypes.Page>();
   private _targetIds = new WeakMap<playwrightTypes.Page, string>();
   private _swappedOut: SwappedOutTab[] = [];
   private _replacements = new WeakMap<Tab, ManualPromise<Tab | undefined>>();
+  private _replacedBy = new WeakMap<Tab, Tab>();
+  private _openingTabs = 0;
+  private _tabSelections = 0;
   private _watchingDisconnect = false;
   private _tracing = false;
   private _disposables: Disposable[] = [];
@@ -279,8 +287,15 @@ export class Context {
 
   async newTab(): Promise<Tab> {
     const browserContext = await this.ensureBrowserContext();
-    const page = await browserContext.newPage();
+    this._openingTabs++;
+    let page: playwrightTypes.Page;
+    try {
+      page = await browserContext.newPage();
+    } finally {
+      this._openingTabs--;
+    }
     this._currentTab = this._tabs.find(t => t.page === page)!;
+    this._tabSelections++;
     return this._currentTab;
   }
 
@@ -290,6 +305,7 @@ export class Context {
       throw new Error(`Tab ${index} not found`);
     await tab.page.bringToFront();
     this._currentTab = tab;
+    this._tabSelections++;
     return tab;
   }
 
@@ -349,8 +365,14 @@ export class Context {
     return [...video.fileNames];
   }
 
-  // The dispatcher calls this before every tool call, the one point where no action is mid-flight.
-  async syncVideoConfig() {
+  // The dispatcher calls this before every tool call. Calls can overlap, so syncs run one at a time.
+  syncVideoConfig(): Promise<void> {
+    const sync = this._videoSync.then(() => this._syncVideoConfig());
+    this._videoSync = sync.catch(() => {});
+    return sync;
+  }
+
+  private async _syncVideoConfig() {
     if (!this.config.videoConfig)
       return;
     const setting = await readVideoSetting(this.config.videoConfig);
@@ -372,7 +394,7 @@ export class Context {
     try {
       if (await this.isReadbackLocked())
         return;
-      this._configVideo = { size, pages: new Set() };
+      this._configVideo = { size, pages: new Set(), starts: [], stopping: false };
       const browserContext = await this.ensureBrowserContext();
       for (const page of browserContext.pages())
         await this._startConfigPageVideo(page);
@@ -383,19 +405,29 @@ export class Context {
 
   private async _startConfigPageVideo(page: playwrightTypes.Page) {
     const video = this._configVideo;
-    if (!video || video.pages.has(page))
+    if (!video || video.stopping || video.pages.has(page))
       return;
     video.pages.add(page);
-    const dir = path.resolve(outputDir(this.options), 'videos');
-    await fs.promises.mkdir(dir, { recursive: true });
-    const file = path.join(dir, `video-${new Date().toISOString().replace(/[:.]/g, '-')}-${++this._configVideoFiles}.webm`);
-    await page.screencast.start({ path: file, size: video.size });
+    const start = (async () => {
+      const dir = path.resolve(outputDir(this.options), 'videos');
+      await fs.promises.mkdir(dir, { recursive: true });
+      // A stop that began during the await would miss this screencast and leave it recording untracked.
+      if (this._configVideo !== video || video.stopping)
+        return;
+      const file = path.join(dir, `video-${new Date().toISOString().replace(/[:.]/g, '-')}-${++this._configVideoFiles}.webm`);
+      await page.screencast.start({ path: file, size: video.size });
+    })();
+    video.starts.push(start);
+    await start;
   }
 
+  // Stays reported by activeRecordings until every screencast has stopped.
   private async _stopConfigVideo() {
     const video = this._configVideo;
     if (!video)
       return;
+    video.stopping = true;
+    await Promise.allSettled(video.starts);
     for (const page of video.pages)
       await page.screencast.stop().catch(() => {});
     this._configVideo = undefined;
@@ -449,11 +481,13 @@ export class Context {
     const targetId = pageTargetId(page);
     if (targetId)
       this._targetIds.set(page, targetId);
-    const swappedOut = this._claimSwappedOut(page, targetId);
+    const swappedOut = this._openingTabs ? undefined : this._claimSwappedOut(page, targetId);
     if (swappedOut) {
       this._tabs.splice(Math.min(swappedOut.index, this._tabs.length), 0, tab);
-      if (swappedOut.wasCurrent)
+      // A tab the agent picked since the close stays current.
+      if (swappedOut.wasCurrent && this._tabSelections === swappedOut.tabSelections)
         this._currentTab = tab;
+      this._replacedBy.set(swappedOut.tab, tab);
       this._replacements.get(swappedOut.tab)?.resolve(tab);
     } else {
       this._tabs.push(tab);
@@ -472,8 +506,14 @@ export class Context {
     const wasCurrent = this._currentTab === tab;
     if (wasCurrent)
       this._currentTab = this._tabs[Math.min(index, this._tabs.length - 1)];
-    if (!this._closingOnPurpose.has(tab.page) && this._rawBrowserContext.browser()?.isConnected() !== false)
-      this._rememberSwappedOut({ tab, index, wasCurrent, targetId: this._targetIds.get(tab.page), closedAt: Date.now() });
+    this._configVideo?.pages.delete(tab.page);
+    if (this.config.recoverTargetSwaps && !this._closingOnPurpose.has(tab.page) && this._rawBrowserContext.browser()?.isConnected() !== false)
+      this._rememberSwappedOut({ tab, index, wasCurrent, tabSelections: this._tabSelections, targetId: this._targetIds.get(tab.page), closedAt: Date.now() });
+  }
+
+  // The page that took this tab's place after a target swap, if one did.
+  replacedBy(tab: Tab | undefined): Tab | undefined {
+    return tab ? this._replacedBy.get(tab) : undefined;
   }
 
   // Under the extension relay a cross-site navigation can make Chrome drop a tab's debugger target and attach a
@@ -777,7 +817,7 @@ export class Context {
 
 type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
 
-type SwappedOutTab = { tab: Tab, index: number, wasCurrent: boolean, targetId: string | undefined, closedAt: number };
+type SwappedOutTab = { tab: Tab, index: number, wasCurrent: boolean, tabSelections: number, targetId: string | undefined, closedAt: number };
 
 // Matches the extension's watch on an involuntarily detached tab (kDetachedTabWatchMs).
 const SWAP_WINDOW_MS = 10_000;

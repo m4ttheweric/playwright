@@ -102,9 +102,10 @@ function isCdpDisconnect(message: string): boolean {
 }
 
 // Same first-line anchoring as isCdpDisconnect, plus the abort a navigation reports when its frame goes away.
+// A plain net::ERR_ABORTED (a download, a 204) does not say "frame was detached" and must not wait.
 function isPageGone(message: string): boolean {
   const firstLine = message.split('\n', 1)[0];
-  return isCdpDisconnect(firstLine) || firstLine.includes('net::ERR_ABORTED') || firstLine.includes('frame was detached');
+  return isCdpDisconnect(firstLine) || firstLine.includes('frame was detached');
 }
 
 export class BrowserBackend implements ServerBackend {
@@ -232,8 +233,9 @@ export class BrowserBackend implements ServerBackend {
       } catch (error) {
         handleError = { error };
       }
-      const pageMayHaveGone = !!handleError && isPageGone(String(handleError.error));
-      const replacement = await context.replacementFor(tabBefore, SWAP_WAIT_MS, { awaitCloseMs: pageMayHaveGone ? SWAP_CLOSE_WAIT_MS : 0 });
+      // Only a call that failed because its page went away waits for a replacement; a success keeps its own result.
+      const pageGone = !!handleError && isPageGone(String(handleError.error));
+      const replacement = pageGone ? await context.replacementFor(tabBefore, SWAP_WAIT_MS, { awaitCloseMs: SWAP_CLOSE_WAIT_MS }) : undefined;
       if (replacement) {
         // What failed or was rejected belonged to the page that went away.
         context.drainPendingUnhandledRejections();
@@ -245,6 +247,9 @@ export class BrowserBackend implements ServerBackend {
       } else {
         for (const reason of context.drainPendingUnhandledRejections())
           response.addError(formatRejectionReason(reason));
+        const replacedBy = context.replacedBy(tabBefore);
+        if (replacedBy)
+          response.addTextResult(`The page was replaced during this call (a cross-site navigation or redirect). Now on the replacement at ${context.redactSecrets(replacedBy.page.url())}.`);
         responseObject = await response.serialize();
       }
       this._sessionLog?.logResponse(name, parsedArguments, responseObject, text => context.redactSecrets(text));

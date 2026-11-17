@@ -140,7 +140,9 @@ export function decorateMCPCommand(command: Command, serverVersion: string = pac
             // (backend/ cannot import mcp/protocol.ts -- see DEPS.list) so
             // TraceLog.create can report them in meta.json without a hardcoded
             // protocolVersion literal living in the backend.
-            return new BrowserBackend({ ...config, productVersion: serverVersion, protocolVersion: PROTOCOL_VERSION }, browserContext, tools);
+            // PWTEST_MCP_TARGET_SWAPS lets tests stand in for the relay's swap over --cdp-endpoint.
+            const recoverTargetSwaps = !!config.extension || !!process.env.PWTEST_MCP_TARGET_SWAPS;
+            return new BrowserBackend({ ...config, productVersion: serverVersion, protocolVersion: PROTOCOL_VERSION, recoverTargetSwaps }, browserContext, tools);
           },
           disposed: async backend => {
             clientCount--;
