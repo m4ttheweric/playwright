@@ -335,8 +335,27 @@ export class Context {
     this._tracing = tracing;
   }
 
-  isRecording(): boolean {
-    return !!this.config.saveVideo || !!this._video || this._tracing || this._tabs.some(tab => !!tab.page.video()) || isTracingOrRecordingHar(this._rawBrowserContext);
+  // Each entry names one active recording and how to stop it, for the saved-login refusal.
+  activeRecordings(): string[] {
+    const recordings: string[] = [];
+    if (this.config.saveVideo)
+      recordings.push('video is on: --save-video was set at launch, restart the session without it');
+    else if (this._tabs.some(tab => !!tab.page.video()))
+      recordings.push('video is on: recordVideo is set in the browser context options, restart the session without it');
+    if (this._video)
+      recordings.push('video is on: browser_start_video is recording, stop it with browser_stop_video');
+    const tracing = tracingAndHarState(this._rawBrowserContext);
+    if (!tracing) {
+      recordings.push('recording state is unknown, restart the session');
+      return recordings;
+    }
+    if (this._tracing)
+      recordings.push('trace is on: browser_start_tracing is recording, stop it with browser_stop_tracing');
+    else if (tracing.tracing)
+      recordings.push('trace is on: a Playwright trace was started from code, stop it with context.tracing.stop()');
+    if (tracing.har)
+      recordings.push('HAR is on: a HAR is recording, restart the session without recordHar');
+    return recordings;
   }
 
   private async _startPageVideo(page: playwrightTypes.Page) {
@@ -610,13 +629,13 @@ export class Context {
 
 type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
 
-// Covers a HAR from the context options or startHar, and tracing started by page code. Unknown state counts as recording.
-function isTracingOrRecordingHar(browserContext: playwrightTypes.BrowserContext): boolean {
+// Covers a HAR from the context options or startHar, and tracing started by page code. Undefined means the state is unreadable.
+function tracingAndHarState(browserContext: playwrightTypes.BrowserContext): { tracing: boolean, har: boolean } | undefined {
   // eslint-disable-next-line no-restricted-syntax -- HAR and tracing state are only kept on the client object's private fields.
   const tracing = browserContext.tracing as any;
   if (typeof tracing?._isTracing !== 'boolean' || !(tracing._harRecorders instanceof Map))
-    return true;
-  return tracing._isTracing || tracing._harRecorders.size > 0;
+    return undefined;
+  return { tracing: tracing._isTracing, har: tracing._harRecorders.size > 0 };
 }
 
 // A blocked page (an open dialog) never answers the probe; an unanswered probe counts as connected so the lock fails closed.

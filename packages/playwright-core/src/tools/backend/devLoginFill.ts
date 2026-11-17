@@ -55,9 +55,14 @@ async function fillLocator(tab: Tab, locator: playwright.Locator, name: string) 
   process.stderr.write(`filled saved login for ${approved.frameOrigin}\n`);
 }
 
+function refuseWhileRecording(tab: Tab, name: string) {
+  const recordings = tab.context.activeRecordings();
+  if (recordings.length)
+    throw new DevLoginRefusedError(name, 'recording', undefined, recordings);
+}
+
 async function requestValue(tab: Tab, handle: playwright.ElementHandle<SVGElement | HTMLElement>, name: string) {
-  if (tab.context.isRecording())
-    throw new DevLoginRefusedError(name, 'recording');
+  refuseWhileRecording(tab, name);
   const channel = secretsChannel(tab.context.config.secretsChannelFd);
   if (!channel)
     throw new DevLoginRefusedError(name, 'no-channel');
@@ -69,8 +74,7 @@ async function requestValue(tab: Tab, handle: playwright.ElementHandle<SVGElemen
   if (!await tab.context.waitForReadbackCallsToDrain(READBACK_DRAIN_TIMEOUT_MS))
     throw new DevLoginRefusedError(name, 'timeout');
   // A recording tool that was still running during the first check may have started one.
-  if (tab.context.isRecording())
-    throw new DevLoginRefusedError(name, 'recording');
+  refuseWhileRecording(tab, name);
   const reply = await channel.request(name, frameOrigin, elementKind);
   if (reply === 'timeout' || reply === 'no-channel')
     throw new DevLoginRefusedError(name, reply);
