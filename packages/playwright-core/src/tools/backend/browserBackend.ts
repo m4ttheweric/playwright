@@ -193,6 +193,7 @@ export class BrowserBackend implements ServerBackend {
       if (locked)
         return formatError(`${name} is unavailable until the page leaves the saved login it was just filled with.`);
     }
+    await context.syncVideoConfig().catch(e => debug('pw:tools:error')(e));
     context.setRunningTool(name);
     // Must run before tool.handle(): establishes this dispatch's epoch so any
     // action it starts (and any still-running background action from a prior,

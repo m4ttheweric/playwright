@@ -52,6 +52,7 @@ export type ContextConfig = {
   saveSession?: boolean;
   saveTrace?: boolean;
   saveVideo?: { width: number, height: number };
+  videoConfig?: string;
   // Not CLI-settable: threaded in by the caller that constructs BrowserBackend
   // (mcp/program.ts and friends) from data those callers already have --
   // mcp/program.ts's `serverVersion` and mcp/protocol.ts's `VERSION` -- and
@@ -103,7 +104,8 @@ export type FilenameTemplate = {
   date?: Date;
 };
 
-type VideoParams = { size?: { width: number; height: number } };
+type VideoSize = { width: number; height: number };
+type VideoParams = { size?: VideoSize };
 
 // Per-action telemetry collected while a tool's own callback runs (network
 // activity, waits). A take-once accessor: set during the action by
@@ -162,6 +164,11 @@ export class Context {
     fileNames: string[];
     fileName: string;
   } | undefined;
+  private _configVideo: {
+    size: VideoSize;
+    pages: Set<playwrightTypes.Page>;
+  } | undefined;
+  private _configVideoFiles = 0;
   private _tracing = false;
   private _disposables: Disposable[] = [];
 
@@ -216,6 +223,7 @@ export class Context {
     this._tabs.length = 0;
     this._currentTab = undefined;
     await this.stopVideoRecording();
+    await this._stopConfigVideo();
   }
 
   drainPendingUnhandledRejections(): unknown[] {
@@ -315,6 +323,8 @@ export class Context {
   async startVideoRecording(fileName: string, params: VideoParams) {
     if (this._video)
       throw new Error('Video recording has already been started.');
+    if (this._configVideo)
+      throw new Error(`Video recording has already been started by the video setting in ${this.config.videoConfig}.`);
     this._video = { params, fileName, fileNames: [] };
     const browserContext = await this.ensureBrowserContext();
     for (const page of browserContext.pages())
@@ -331,6 +341,58 @@ export class Context {
     return [...video.fileNames];
   }
 
+  // The dispatcher calls this before every tool call, the one point where no action is mid-flight.
+  async syncVideoConfig() {
+    if (!this.config.videoConfig)
+      return;
+    const setting = await readVideoSetting(this.config.videoConfig);
+    if (setting === 'unreadable')
+      return;
+    const current = this._configVideo?.size;
+    if (setting?.width === current?.width && setting?.height === current?.height)
+      return;
+    await this._stopConfigVideo();
+    if (setting)
+      await this._startConfigVideo(setting);
+  }
+
+  private async _startConfigVideo(size: VideoSize) {
+    if (this._video)
+      return;
+    // Starting a recording reads the page back, so a filled saved login defers it to a later call.
+    this.beginReadbackCall();
+    try {
+      if (await this.isReadbackLocked())
+        return;
+      this._configVideo = { size, pages: new Set() };
+      const browserContext = await this.ensureBrowserContext();
+      for (const page of browserContext.pages())
+        await this._startConfigPageVideo(page);
+    } finally {
+      this.endReadbackCall();
+    }
+  }
+
+  private async _startConfigPageVideo(page: playwrightTypes.Page) {
+    const video = this._configVideo;
+    if (!video || video.pages.has(page))
+      return;
+    video.pages.add(page);
+    const dir = path.resolve(outputDir(this.options), 'videos');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `video-${new Date().toISOString().replace(/[:.]/g, '-')}-${++this._configVideoFiles}.webm`);
+    await page.screencast.start({ path: file, size: video.size });
+  }
+
+  private async _stopConfigVideo() {
+    const video = this._configVideo;
+    if (!video)
+      return;
+    for (const page of video.pages)
+      await page.screencast.stop().catch(() => {});
+    this._configVideo = undefined;
+  }
+
   setTracing(tracing: boolean) {
     this._tracing = tracing;
   }
@@ -342,6 +404,8 @@ export class Context {
       recordings.push('video is on: --save-video was set at launch, restart the session without it');
     else if (this._tabs.some(tab => !!tab.page.video()))
       recordings.push('video is on: recordVideo is set in the browser context options, restart the session without it');
+    if (this._configVideo)
+      recordings.push(`video is on: video is set in ${this.config.videoConfig}, run fast-browser configure --video off and it stops on the next call`);
     if (this._video)
       recordings.push('video is on: browser_start_video is recording, stop it with browser_stop_video');
     const tracing = tracingAndHarState(this._rawBrowserContext);
@@ -378,6 +442,7 @@ export class Context {
     if (!this._currentTab)
       this._currentTab = tab;
     this._startPageVideo(page).catch(() => {});
+    this._startConfigPageVideo(page).catch(() => {});
   }
 
   private _onPageClosed(tab: Tab) {
@@ -628,6 +693,20 @@ export class Context {
 }
 
 type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
+
+// A missing file means video off. A file caught mid-write keeps the current state rather than splitting the recording.
+async function readVideoSetting(file: string): Promise<VideoSize | null | 'unreadable'> {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+  } catch (error: any) {
+    return error?.code === 'ENOENT' ? null : 'unreadable';
+  }
+  const video = parsed?.video;
+  if (Number.isInteger(video?.width) && Number.isInteger(video?.height) && video.width > 0 && video.height > 0)
+    return { width: video.width, height: video.height };
+  return null;
+}
 
 // Covers a HAR from the context options or startHar, and tracing started by page code. Undefined means the state is unreadable.
 function tracingAndHarState(browserContext: playwrightTypes.BrowserContext): { tracing: boolean, har: boolean } | undefined {
