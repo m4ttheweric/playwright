@@ -237,6 +237,8 @@ export class Context {
     this._tabs.length = 0;
     this._currentTab = undefined;
     await this.stopVideoRecording();
+    // A sync still in flight could otherwise start a recording after this stop.
+    await this._videoSync;
     await this._stopConfigVideo();
   }
 

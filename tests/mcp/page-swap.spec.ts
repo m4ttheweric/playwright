@@ -159,16 +159,30 @@ test('a navigation whose page closes with no replacement keeps its original erro
   expect(text(response)).not.toContain('replaced');
 });
 
-test('a browser that dies mid-navigation fails without waiting for a replacement', async ({ cdpServer, startClient, server }) => {
+test('a browser that dies mid-call reports SIDECAR_LOST without waiting for a replacement', async ({ cdpServer, startClient, server }) => {
   const { browserContext, client } = await setUp(cdpServer, startClient, server);
 
-  const navigation = client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/hanging' } });
-  await server.waitForRequest('/hanging');
+  const waiting = client.callTool({ name: 'browser_wait_for', arguments: { text: 'never appears' } });
+  await new Promise(resolve => setTimeout(resolve, 500));
   const killedAt = Date.now();
   await browserContext.close();
 
-  const response = await navigation;
-  expect(Date.now() - killedAt).toBeLessThan(4000);
-  expect(response.isError).toBe(true);
+  const response = await waiting;
+  expect(Date.now() - killedAt).toBeLessThan(3000);
+  expect(text(response)).toContain('SIDECAR_LOST:');
   expect(text(response)).not.toContain('replaced');
+});
+
+test('a call that succeeds while its page is swapped keeps its result and says where the page went', async ({ cdpServer, startClient, server }) => {
+  const { browserContext, client } = await setUp(cdpServer, startClient, server);
+
+  // The script waits on the other tab, so the swap of its own page cannot fail it.
+  const running = client.callTool({ name: 'browser_run_code_unsafe', arguments: { code: `async page => { await page.context().pages().find(p => p.url().endsWith('/other')).waitForTimeout(1500); return 'RESULT-42'; }` } });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await swapDrivenPage(browserContext, server.PREFIX + '/signin');
+  const response = await running;
+
+  expect(response.isError, text(response)).toBeFalsy();
+  expect(JSON.stringify(response.content)).toContain('RESULT-42');
+  expect(JSON.stringify(response.content)).toContain(`The page was replaced during this call (a cross-site navigation or redirect). Now on the replacement at ${server.PREFIX}/signin.`);
 });

@@ -234,7 +234,7 @@ export class BrowserBackend implements ServerBackend {
         handleError = { error };
       }
       // Only a call that failed because its page went away waits for a replacement; a success keeps its own result.
-      const pageGone = !!handleError && isPageGone(String(handleError.error));
+      const pageGone = !!handleError && !!context.config.recoverTargetSwaps && isPageGone(String(handleError.error));
       const replacement = pageGone ? await context.replacementFor(tabBefore, SWAP_WAIT_MS, { awaitCloseMs: SWAP_CLOSE_WAIT_MS }) : undefined;
       if (replacement) {
         // What failed or was rejected belonged to the page that went away.
@@ -249,7 +249,7 @@ export class BrowserBackend implements ServerBackend {
           response.addError(formatRejectionReason(reason));
         const replacedBy = context.replacedBy(tabBefore);
         if (replacedBy)
-          response.addTextResult(`The page was replaced during this call (a cross-site navigation or redirect). Now on the replacement at ${context.redactSecrets(replacedBy.page.url())}.`);
+          response.addTextResult(`The page was replaced during this call (a cross-site navigation or redirect). ${replacementLocation(context, replacedBy)}`);
         responseObject = await response.serialize();
       }
       this._sessionLog?.logResponse(name, parsedArguments, responseObject, text => context.redactSecrets(text));
@@ -298,13 +298,21 @@ export class BrowserBackend implements ServerBackend {
 // A swapped page is not a lost session, so this result must never carry the SIDECAR_LOST prefix.
 async function swappedPageResponse(context: Context, name: string, args: Record<string, any>, options: { relativeTo?: string, raw: boolean, json: boolean }, replacement: Tab): Promise<mcpServer.CallToolResult> {
   const response = new Response(context, name, args, options);
-  const url = context.redactSecrets(replacement.page.url());
+  const location = replacementLocation(context, replacement);
   if (name === 'browser_navigate')
-    response.addTextResult(`The page was replaced during the navigation (a cross-site redirect). Now on the replacement at ${url}.`);
+    response.addTextResult(`The page was replaced during the navigation (a cross-site redirect). ${location}`);
   else
-    response.addError(`The page was replaced while ${name} ran (a cross-site navigation or redirect). The session is live on the replacement at ${url}. Check the page before retrying.`);
+    response.addError(`The page was replaced while ${name} ran (a cross-site navigation or redirect). The session is live. ${location} Check the page before retrying.`);
   response.setIncludeSnapshot();
   return await response.serialize();
+}
+
+// The replacement is current unless the agent picked another tab after the swap.
+function replacementLocation(context: Context, replacement: Tab): string {
+  const url = context.redactSecrets(replacement.page.url());
+  return context.currentTab() === replacement
+    ? `Now on the replacement at ${url}.`
+    : `The replacement is open at ${url}, but another tab is current.`;
 }
 
 function extractErrorText(responseObject: mcpServer.CallToolResult): string | undefined {
