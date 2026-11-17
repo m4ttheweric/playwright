@@ -23,11 +23,16 @@ import { TraceLog, TRACE_SCHEMA_VERSION } from './traceLog';
 import { packageJSON } from '../../package';
 import type { ContextConfig } from './context';
 import type * as playwright from '../../..';
+import type { Tab } from './tab';
 import type { Tool } from './tool';
 import type * as mcpServer from '../utils/mcp/server';
 import type { ClientInfo, ServerBackend } from '../utils/mcp/server';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+// How long a call whose page closed under it waits for the relay to attach the replacement.
+const SWAP_WAIT_MS = 5_000;
+const SWAP_CLOSE_WAIT_MS = 1_000;
 
 const READBACK_TOOLS = new Set([
   'browser_evaluate',
@@ -94,6 +99,12 @@ const CDP_DISCONNECT_SIGNATURES = [
 function isCdpDisconnect(message: string): boolean {
   const firstLine = message.split('\n', 1)[0];
   return CDP_DISCONNECT_SIGNATURES.some(signature => firstLine.includes(signature));
+}
+
+// Same first-line anchoring as isCdpDisconnect, plus the abort a navigation reports when its frame goes away.
+function isPageGone(message: string): boolean {
+  const firstLine = message.split('\n', 1)[0];
+  return isCdpDisconnect(firstLine) || firstLine.includes('net::ERR_ABORTED') || firstLine.includes('frame was detached');
 }
 
 export class BrowserBackend implements ServerBackend {
@@ -202,7 +213,8 @@ export class BrowserBackend implements ServerBackend {
     context.beginAction();
     const traceLog = this._traceLog;
     const startedAt = new Date().toISOString();
-    const urlBefore = context.currentTab()?.page.url();
+    const tabBefore = context.currentTab();
+    const urlBefore = tabBefore?.page.url();
     let traceError: string | undefined;
     // Definite initializer only: the try/catch below always overwrites this
     // before it's read (success sets it via response.serialize(), any thrown
@@ -214,10 +226,27 @@ export class BrowserBackend implements ServerBackend {
     // to satisfy tsc — it is not expected to ever be the value actually read.
     let responseObject: mcpServer.CallToolResult & { isClose?: boolean } = formatError('Internal error: tool call produced no response');
     try {
-      await tool.handle(context, parsedArguments, response, signal);
-      for (const reason of context.drainPendingUnhandledRejections())
-        response.addError(formatRejectionReason(reason));
-      responseObject = await response.serialize();
+      let handleError: { error: unknown } | undefined;
+      try {
+        await tool.handle(context, parsedArguments, response, signal);
+      } catch (error) {
+        handleError = { error };
+      }
+      const pageMayHaveGone = !!handleError && isPageGone(String(handleError.error));
+      const replacement = await context.replacementFor(tabBefore, SWAP_WAIT_MS, { awaitCloseMs: pageMayHaveGone ? SWAP_CLOSE_WAIT_MS : 0 });
+      if (replacement) {
+        // What failed or was rejected belonged to the page that went away.
+        context.drainPendingUnhandledRejections();
+        responseObject = await swappedPageResponse(context, name, parsedArguments, { relativeTo: cwd, raw, json }, replacement);
+        if (responseObject.isError)
+          traceError = extractErrorText(responseObject);
+      } else if (handleError) {
+        throw handleError.error;
+      } else {
+        for (const reason of context.drainPendingUnhandledRejections())
+          response.addError(formatRejectionReason(reason));
+        responseObject = await response.serialize();
+      }
       this._sessionLog?.logResponse(name, parsedArguments, responseObject, text => context.redactSecrets(text));
     } catch (error: any) {
       const messages = [String(error), ...context.drainPendingUnhandledRejections().map(formatRejectionReason)];
@@ -259,6 +288,18 @@ export class BrowserBackend implements ServerBackend {
       responseObject.isClose = true;
     return responseObject;
   }
+}
+
+// A swapped page is not a lost session, so this result must never carry the SIDECAR_LOST prefix.
+async function swappedPageResponse(context: Context, name: string, args: Record<string, any>, options: { relativeTo?: string, raw: boolean, json: boolean }, replacement: Tab): Promise<mcpServer.CallToolResult> {
+  const response = new Response(context, name, args, options);
+  const url = context.redactSecrets(replacement.page.url());
+  if (name === 'browser_navigate')
+    response.addTextResult(`The page was replaced during the navigation (a cross-site redirect). Now on the replacement at ${url}.`);
+  else
+    response.addError(`The page was replaced while ${name} ran (a cross-site navigation or redirect). The session is live on the replacement at ${url}. Check the page before retrying.`);
+  response.setIncludeSnapshot();
+  return await response.serialize();
 }
 
 function extractErrorText(responseObject: mcpServer.CallToolResult): string | undefined {

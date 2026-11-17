@@ -20,6 +20,7 @@ import path from 'path';
 
 import debug from 'debug';
 import { escapeWithQuotes } from '@isomorphic/stringUtils';
+import { ManualPromise } from '@isomorphic/manualPromise';
 import { disposeAll } from '@isomorphic/disposable';
 import { eventsHelper } from '@utils/eventsHelper';
 import { isPathInside, isSystemDirectory, isWritable } from '@utils/fileUtils';
@@ -169,6 +170,11 @@ export class Context {
     pages: Set<playwrightTypes.Page>;
   } | undefined;
   private _configVideoFiles = 0;
+  private _closingOnPurpose = new WeakSet<playwrightTypes.Page>();
+  private _targetIds = new WeakMap<playwrightTypes.Page, string>();
+  private _swappedOut: SwappedOutTab[] = [];
+  private _replacements = new WeakMap<Tab, ManualPromise<Tab | undefined>>();
+  private _watchingDisconnect = false;
   private _tracing = false;
   private _disposables: Disposable[] = [];
 
@@ -291,6 +297,7 @@ export class Context {
     await this.ensureBrowserContext();
     const crashed = this._currentTab?.crashed;
     if (crashed) {
+      this._closingOnPurpose.add(this._currentTab!.page);
       await this._currentTab!.page.close().catch(() => {});
       this._currentTab = undefined;
     }
@@ -307,6 +314,7 @@ export class Context {
     if (!tab)
       throw new Error(`Tab ${index} not found`);
     const url = tab.page.url();
+    this._closingOnPurpose.add(tab.page);
     await tab.page.close();
     return url;
   }
@@ -438,7 +446,18 @@ export class Context {
 
   private _onPageCreated(page: playwrightTypes.Page) {
     const tab = new Tab(this, page, tab => this._onPageClosed(tab));
-    this._tabs.push(tab);
+    const targetId = pageTargetId(page);
+    if (targetId)
+      this._targetIds.set(page, targetId);
+    const swappedOut = this._claimSwappedOut(page, targetId);
+    if (swappedOut) {
+      this._tabs.splice(Math.min(swappedOut.index, this._tabs.length), 0, tab);
+      if (swappedOut.wasCurrent)
+        this._currentTab = tab;
+      this._replacements.get(swappedOut.tab)?.resolve(tab);
+    } else {
+      this._tabs.push(tab);
+    }
     if (!this._currentTab)
       this._currentTab = tab;
     this._startPageVideo(page).catch(() => {});
@@ -450,9 +469,73 @@ export class Context {
     if (index === -1)
       return;
     this._tabs.splice(index, 1);
-
-    if (this._currentTab === tab)
+    const wasCurrent = this._currentTab === tab;
+    if (wasCurrent)
       this._currentTab = this._tabs[Math.min(index, this._tabs.length - 1)];
+    if (!this._closingOnPurpose.has(tab.page) && this._rawBrowserContext.browser()?.isConnected() !== false)
+      this._rememberSwappedOut({ tab, index, wasCurrent, targetId: this._targetIds.get(tab.page), closedAt: Date.now() });
+  }
+
+  // Under the extension relay a cross-site navigation can make Chrome drop a tab's debugger target and attach a
+  // replacement: Playwright sees the page close and a new one open. The replacement takes the closed tab's place.
+  private _rememberSwappedOut(swappedOut: SwappedOutTab) {
+    this._pruneSwappedOut();
+    const replacement = new ManualPromise<Tab | undefined>();
+    this._replacements.set(swappedOut.tab, replacement);
+    this._swappedOut.push(swappedOut);
+    if (!this._watchingDisconnect) {
+      this._watchingDisconnect = true;
+      const giveUp = () => this._abandonSwappedOut();
+      this._rawBrowserContext.once('close', giveUp);
+      this._rawBrowserContext.browser()?.once('disconnected', giveUp);
+    }
+  }
+
+  private _claimSwappedOut(page: playwrightTypes.Page, targetId: string | undefined): SwappedOutTab | undefined {
+    this._pruneSwappedOut();
+    if (!this._swappedOut.length)
+      return undefined;
+    let match = targetId ? this._swappedOut.find(s => s.targetId === targetId) : undefined;
+    // Chrome can mint a new target id for the replacement; a lone closed tab and an opener-less page are the pair.
+    if (!match && this._swappedOut.length === 1 && !pageHasOpener(page))
+      match = this._swappedOut[0];
+    if (match)
+      this._swappedOut.splice(this._swappedOut.indexOf(match), 1);
+    return match;
+  }
+
+  private _pruneSwappedOut() {
+    const now = Date.now();
+    const expired = this._swappedOut.filter(s => now - s.closedAt > SWAP_WINDOW_MS);
+    this._swappedOut = this._swappedOut.filter(s => !expired.includes(s));
+    for (const swappedOut of expired)
+      this._replacements.get(swappedOut.tab)?.resolve(undefined);
+  }
+
+  private _abandonSwappedOut() {
+    const swappedOut = this._swappedOut;
+    this._swappedOut = [];
+    for (const entry of swappedOut)
+      this._replacements.get(entry.tab)?.resolve(undefined);
+  }
+
+  // Resolves to the page that replaced the tab, or undefined when the tab was not swapped out or nothing replaced it.
+  async replacementFor(tab: Tab | undefined, timeoutMs: number, options: { awaitCloseMs?: number } = {}): Promise<Tab | undefined> {
+    if (!tab)
+      return undefined;
+    // A navigation can reject on the frame detaching before the page's close event arrives.
+    if (options.awaitCloseMs && !this._replacements.has(tab) && !tab.page.isClosed())
+      await tab.page.waitForEvent('close', { timeout: options.awaitCloseMs }).catch(() => {});
+    const replacement = this._replacements.get(tab);
+    if (!replacement)
+      return undefined;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<undefined>(resolve => timer = setTimeout(() => resolve(undefined), timeoutMs));
+    try {
+      return await Promise.race([replacement, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   routes(): RouteEntry[] {
@@ -693,6 +776,30 @@ export class Context {
 }
 
 type ReadbackLock = { frame: playwrightTypes.Frame, handle: playwrightTypes.ElementHandle };
+
+type SwappedOutTab = { tab: Tab, index: number, wasCurrent: boolean, targetId: string | undefined, closedAt: number };
+
+// Matches the extension's watch on an involuntarily detached tab (kDetachedTabWatchMs).
+const SWAP_WINDOW_MS = 10_000;
+
+// Throws once the page is closed, so read it while the page is open.
+function serverPage(page: playwrightTypes.Page): any {
+  try {
+    // eslint-disable-next-line no-restricted-syntax -- target identity is only kept on the in-process server page.
+    return (page as any)._connection?.toImpl?.(page);
+  } catch {
+    return undefined;
+  }
+}
+
+function pageTargetId(page: playwrightTypes.Page): string | undefined {
+  const targetId = serverPage(page)?.delegate?._targetId;
+  return typeof targetId === 'string' ? targetId : undefined;
+}
+
+function pageHasOpener(page: playwrightTypes.Page): boolean {
+  return !!serverPage(page)?.opener?.();
+}
 
 // A missing file means video off. A file caught mid-write keeps the current state rather than splitting the recording.
 async function readVideoSetting(file: string): Promise<VideoSize | null | 'unreadable'> {
