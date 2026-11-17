@@ -95,6 +95,23 @@ test(`cross-origin navigation from a click keeps the session alive`, async ({ st
   expect(alive, `click error: ${clickError}\nprobe: ${detail}`).toBe(true);
 });
 
+// FB-74: a navigation redirected cross-site to a sign-in page must land there, not read as a lost session.
+test(`navigation redirected cross-site to a sign-in page lands on it`, async ({ startExtensionClient, server }) => {
+  server.setContent('/step-one', '<title>StepOne</title><body>Step one</body>', 'text/html');
+  server.setRedirect('/protected', `${server.CROSS_PROCESS_PREFIX}/signin`);
+  server.setContent('/signin', '<title>SignIn</title><body>Sign in to continue</body>', 'text/html');
+  const { browserContext, client } = await startExtensionClient();
+  await connectAndNavigate(browserContext, client, server.PREFIX + '/step-one');
+
+  const response = await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX + '/protected' } });
+  const text = (response as any).content?.[0]?.text ?? '';
+  expect((response as any).isError, text).toBeFalsy();
+  expect(text).toContain(`${server.CROSS_PROCESS_PREFIX}/signin`);
+
+  const { alive, detail } = await sessionIsAlive(client);
+  expect(alive, `probe after redirect: ${detail}`).toBe(true);
+});
+
 // Closest analogue to the FNOL "I Agree and Continue" step: a real form
 // submission replacing the document, rather than a scripted location assign.
 test(`form submission from a click keeps the session alive`, async ({ startExtensionClient, server }) => {
