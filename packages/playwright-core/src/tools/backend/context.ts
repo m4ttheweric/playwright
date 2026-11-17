@@ -170,7 +170,7 @@ export class Context {
   private _configVideo: {
     size: VideoSize;
     pages: Set<playwrightTypes.Page>;
-    starts: Promise<void>[];
+    starts: Promise<unknown>[];
     stopping: boolean;
   } | undefined;
   private _configVideoFiles = 0;
@@ -384,7 +384,8 @@ export class Context {
     if (setting?.width === current?.width && setting?.height === current?.height)
       return;
     await this._stopConfigVideo();
-    if (setting)
+    // A stop that timed out leaves the old recording tracked; never start a second one over it.
+    if (setting && !this._configVideo)
       await this._startConfigVideo(setting);
   }
 
@@ -399,7 +400,7 @@ export class Context {
       this._configVideo = { size, pages: new Set(), starts: [], stopping: false };
       const browserContext = await this.ensureBrowserContext();
       for (const page of browserContext.pages())
-        await this._startConfigPageVideo(page);
+        await this._startConfigPageVideo(page).catch(() => {});
     } finally {
       this.endReadbackCall();
     }
@@ -417,21 +418,34 @@ export class Context {
       if (this._configVideo !== video || video.stopping)
         return;
       const file = path.join(dir, `video-${new Date().toISOString().replace(/[:.]/g, '-')}-${++this._configVideoFiles}.webm`);
-      await page.screencast.start({ path: file, size: video.size });
+      // A start that never answers stays in video.pages, so the next stop still tries it.
+      await settleWithin(page.screencast.start({ path: file, size: video.size }), VIDEO_STEP_TIMEOUT_MS);
+      const recording = recordingArtifact(page);
+      if (recording)
+        page.once('close', () => recording.saveAs(file).catch(() => {}));
     })();
     video.starts.push(start);
     await start;
   }
 
-  // Stays reported by activeRecordings until every screencast has stopped.
+  // Stays reported by activeRecordings until every screencast has stopped. A stop that never answers
+  // keeps its page tracked, so saved logins stay refused and the next sync tries the stop again.
   private async _stopConfigVideo() {
     const video = this._configVideo;
     if (!video)
       return;
     video.stopping = true;
     await Promise.allSettled(video.starts);
-    for (const page of video.pages)
-      await page.screencast.stop().catch(() => {});
+    video.starts = [];
+    const stuck = new Set<playwrightTypes.Page>();
+    for (const page of video.pages) {
+      if (await settleWithin(page.screencast.stop(), VIDEO_STEP_TIMEOUT_MS) === 'timeout')
+        stuck.add(page);
+    }
+    if (stuck.size) {
+      video.pages = stuck;
+      return;
+    }
     this._configVideo = undefined;
   }
 
@@ -841,6 +855,27 @@ function pageTargetId(page: playwrightTypes.Page): string | undefined {
 
 function pageHasOpener(page: playwrightTypes.Page): boolean {
   return !!serverPage(page)?.opener?.();
+}
+
+// Bounds one screencast start or stop, so a page that never answers cannot hold up every later tool call.
+const VIDEO_STEP_TIMEOUT_MS = 10_000;
+
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<'settled' | 'timeout'> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'timeout'>(resolve => timer = setTimeout(() => resolve('timeout'), timeoutMs));
+  try {
+    return await Promise.race([promise.then(() => 'settled' as const, () => 'settled' as const), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Screencast.stop() throws on a closed page before it saves, but the server finishes the recording when the page
+// closes, so the artifact captured right after this start can still be saved.
+function recordingArtifact(page: playwrightTypes.Page): { saveAs(file: string): Promise<void> } | undefined {
+  // eslint-disable-next-line no-restricted-syntax -- the recording is only reachable through the client's private artifact.
+  const artifact = (page.screencast as any)._artifact;
+  return typeof artifact?.saveAs === 'function' ? artifact : undefined;
 }
 
 // A missing file means video off. A file caught mid-write keeps the current state rather than splitting the recording.

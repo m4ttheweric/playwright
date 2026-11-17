@@ -81,7 +81,7 @@ export function decorateProgram(program: Command) {
           // FullConfig type, which is also used above for browser.isolated/
           // userDataDir and shouldn't grow fields that only matter to trace
           // capture.
-          const daemonConfig = { ...mcpConfig, productVersion: packageJSON.version, protocolVersion: PROTOCOL_VERSION };
+          const daemonConfig = { ...mcpConfig, productVersion: packageJSON.version, protocolVersion: PROTOCOL_VERSION, recoverTargetSwaps: !!mcpConfig.extension };
           const socketPath = await startCliDaemonServer(sessionName, browserContext, browserInfo, daemonConfig, clientInfo, mcpClientInfo, { persistent, exitOnClose: true, ownership });
           console.log(`Daemon listening on ${socketPath}\n`);
         } catch (error) {

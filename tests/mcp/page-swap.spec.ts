@@ -72,6 +72,11 @@ async function tabList(client: any) {
   return text(await client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }));
 }
 
+// A list call that races the close fails on the closing page and waits up to 6s for a replacement.
+async function waitForStartToClose(client: any) {
+  await expect.poll(() => tabList(client), { timeout: 20_000 }).not.toContain('[Start]');
+}
+
 test('a navigation whose page is swapped mid-call lands on the replacement, not SIDECAR_LOST', async ({ cdpServer, startClient, server }) => {
   const { browserContext, client } = await setUp(cdpServer, startClient, server);
 
@@ -115,7 +120,7 @@ test('a tab the agent opens after a close is not taken as the replacement', asyn
   const { browserContext, client } = await setUp(cdpServer, startClient, server);
 
   await drivenPage(browserContext).close();
-  await expect.poll(() => tabList(client)).not.toContain('[Start]');
+  await waitForStartToClose(client);
   await client.callTool({ name: 'browser_tabs', arguments: { action: 'new' } });
 
   const tabs = await tabList(client);
@@ -127,7 +132,7 @@ test('a tab the agent selects after a close stays current when a replacement arr
   const { browserContext, client } = await setUp(cdpServer, startClient, server);
 
   await drivenPage(browserContext).close();
-  await expect.poll(() => tabList(client)).not.toContain('[Start]');
+  await waitForStartToClose(client);
   await client.callTool({ name: 'browser_tabs', arguments: { action: 'select', index: 0 } });
   await openPage(browserContext, server.PREFIX + '/signin');
 

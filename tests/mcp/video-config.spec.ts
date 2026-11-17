@@ -71,6 +71,26 @@ test('a tab opened while --video-config has video on is recorded too', async ({ 
   await expect.poll(() => webmFiles(path.join(outputDir, 'videos')).length, { timeout: 15000 }).toBe(2);
 });
 
+test('a tab that closes while --video-config has video on keeps its recording', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const configFile = testInfo.outputPath('config.json');
+  writeVideoConfig(configFile, { width: 800, height: 600 });
+  const { client } = await startClient({ args: [`--output-dir=${outputDir}`, `--video-config=${configFile}`] });
+  server.setContent('/', `<title>Video</title><body style="margin: 0">${tiles}</body>`, 'text/html');
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  await client.callTool({ name: 'browser_tabs', arguments: { action: 'new' } });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+  await client.callTool({ name: 'browser_wait_for', arguments: { time: 1 } });
+  await client.callTool({ name: 'browser_tabs', arguments: { action: 'close' } });
+
+  const videosDir = path.join(outputDir, 'videos');
+  await expect.poll(() => webmFiles(videosDir).length, { timeout: 15000 }).toBe(1);
+
+  writeVideoConfig(configFile, null);
+  await client.callTool({ name: 'browser_snapshot', arguments: {} });
+  await expect.poll(() => webmFiles(videosDir).length, { timeout: 15000 }).toBe(2);
+});
+
 test('a video turned off in --video-config lets the next saved-login fill through', async ({ startClient, server }, testInfo) => {
   const origin = new URL(server.PREFIX).origin;
   const configFile = testInfo.outputPath('config.json');
